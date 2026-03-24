@@ -47,9 +47,14 @@ export async function GET(request: Request) {
     // Sort by date ascending
     uniqueEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-    // Filter to only future events
+    // Filter to events in the next 3 months
     const now = new Date();
-    const futureEvents = uniqueEvents.filter((e) => new Date(e.date) >= now);
+    const threeMonthsOut = new Date(now);
+    threeMonthsOut.setMonth(threeMonthsOut.getMonth() + 3);
+    const futureEvents = uniqueEvents.filter((e) => {
+      const d = new Date(e.date);
+      return d >= now && d <= threeMonthsOut;
+    });
 
     return NextResponse.json({
       events: futureEvents,

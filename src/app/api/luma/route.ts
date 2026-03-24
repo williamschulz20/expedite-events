@@ -33,25 +33,42 @@ const SEARCH_TERMS = [
 // Strategy 1: Luma paginated discover API
 // ---------------------------------------------------------------------------
 async function fetchFromDiscoverAPI(): Promise<FounderEvent[]> {
-  const url = new URL("https://api.lu.ma/discover/get-paginated-events");
-  url.searchParams.set("geo_latitude", String(LONDON_LAT));
-  url.searchParams.set("geo_longitude", String(LONDON_LNG));
-  url.searchParams.set("geo_radius", GEO_RADIUS);
-  url.searchParams.set("pagination_limit", "50");
+  const allEvents: FounderEvent[] = [];
+  const now = new Date();
+  const threeMonths = new Date(now);
+  threeMonths.setMonth(threeMonths.getMonth() + 3);
 
-  const res = await fetch(url.toString(), {
-    headers: {
-      Accept: "application/json",
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    },
-    signal: AbortSignal.timeout(10_000),
-  });
+  // Fetch multiple pages to cover 3 months
+  for (let page = 0; page < 3; page++) {
+    const url = new URL("https://api.lu.ma/discover/get-paginated-events");
+    url.searchParams.set("geo_latitude", String(LONDON_LAT));
+    url.searchParams.set("geo_longitude", String(LONDON_LNG));
+    url.searchParams.set("geo_radius", GEO_RADIUS);
+    url.searchParams.set("pagination_limit", "100");
+    if (page > 0) url.searchParams.set("pagination_offset", String(page * 100));
 
-  if (!res.ok) return [];
+    try {
+      const res = await fetch(url.toString(), {
+        headers: {
+          Accept: "application/json",
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+        signal: AbortSignal.timeout(10_000),
+      });
 
-  const data = await res.json();
-  return parseLumaAPIResponse(data);
+      if (!res.ok) break;
+
+      const data = await res.json();
+      const pageEvents = parseLumaAPIResponse(data);
+      allEvents.push(...pageEvents);
+      if (pageEvents.length < 50) break; // no more pages
+    } catch {
+      break;
+    }
+  }
+
+  return allEvents;
 }
 
 // ---------------------------------------------------------------------------
