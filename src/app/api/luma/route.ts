@@ -21,6 +21,12 @@ const SEARCH_TERMS = [
   "investor",
   "AI",
   "venture capital",
+  "fintech",
+  "SaaS",
+  "entrepreneur",
+  "accelerator",
+  "seed",
+  "fundraising",
 ];
 
 // ---------------------------------------------------------------------------
@@ -55,7 +61,7 @@ async function fetchFromSearchAPI(): Promise<FounderEvent[]> {
   const allEvents: FounderEvent[] = [];
   const seenIds = new Set<string>();
 
-  for (const term of SEARCH_TERMS.slice(0, 5)) {
+  for (const term of SEARCH_TERMS) {
     try {
       const url = new URL("https://api.lu.ma/public/v2/event/search");
       url.searchParams.set("query", term);
@@ -441,6 +447,46 @@ export async function GET() {
       all.push(...nextDataResults.value);
 
     const events = dedup(all);
+
+    // Fetch descriptions for events that don't have them (up to 20)
+    const needsDescription = events.filter((e) => !e.description).slice(0, 20);
+    if (needsDescription.length > 0) {
+      const detailResults = await Promise.allSettled(
+        needsDescription.map(async (e) => {
+          try {
+            const slug = e.url.replace("https://lu.ma/", "");
+            const res = await fetch(`https://lu.ma/${slug}`, {
+              headers: {
+                "User-Agent":
+                  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+              },
+              signal: AbortSignal.timeout(5_000),
+            });
+            if (!res.ok) return;
+            const html = await res.text();
+
+            // Extract description from meta tags
+            const descMatch = html.match(
+              /<meta[^>]*(?:name="description"|property="og:description")[^>]*content="([^"]*)"[^>]*>/i
+            );
+            if (descMatch) {
+              e.description = descMatch[1].slice(0, 500);
+            }
+
+            // Also extract full address if we only have "London"
+            if (e.location === "London") {
+              const locMatch = html.match(
+                /<meta[^>]*property="og:location"[^>]*content="([^"]*)"[^>]*>/i
+              );
+              if (locMatch) e.location = locMatch[1];
+            }
+          } catch {
+            // skip
+          }
+        })
+      );
+      // results applied in-place via mutation
+    }
 
     // Sort by date ascending
     events.sort(

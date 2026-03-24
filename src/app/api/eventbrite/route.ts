@@ -1,242 +1,218 @@
 import { NextResponse } from "next/server";
-import {
-  FounderEvent,
-  isRelevantEvent,
-  categorizeEvent,
-} from "@/lib/types";
+import { FounderEvent, categorizeEvent } from "@/lib/types";
 
 const SEARCH_QUERIES = [
   "hackathon",
-  "demo day founders",
-  "startup pitch",
-  "founder networking",
-  "startup meetup",
-  "tech founder",
-  "investor networking",
-  "accelerator showcase",
+  "startup",
+  "founder",
+  "demo day",
+  "pitch night",
+  "networking tech",
+  "investor",
+  "accelerator",
+  "entrepreneur",
+  "AI meetup",
+  "fintech",
+  "SaaS",
+  "venture capital",
+  "seed funding",
+  "startup launch",
+  "tech networking",
 ];
 
-const BASE_URL = "https://www.eventbrite.co.uk/d/united-kingdom--london/";
-
-/**
- * Extract events from Eventbrite search HTML using regex.
- * Eventbrite embeds structured data (JSON-LD) and also has predictable
- * markup patterns we can match against.
- */
-function parseEventsFromHTML(html: string, query: string): FounderEvent[] {
+// Eventbrite has a search API that returns JSON when you hit their internal endpoint
+async function searchEventbrite(query: string): Promise<FounderEvent[]> {
   const events: FounderEvent[] = [];
 
-  // Strategy 1: Extract JSON-LD structured data (most reliable)
-  const jsonLdRegex =
-    /<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-  let jsonLdMatch;
+  try {
+    // Use Eventbrite's search page API which returns embedded JSON data
+    const searchUrl = `https://www.eventbrite.co.uk/d/united-kingdom--london/${encodeURIComponent(query)}/?page=1&lang=en-gb`;
 
-  while ((jsonLdMatch = jsonLdRegex.exec(html)) !== null) {
-    try {
-      const data = JSON.parse(jsonLdMatch[1]);
-      const items = Array.isArray(data) ? data : [data];
+    const res = await fetch(searchUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-GB,en;q=0.9",
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
 
-      for (const item of items) {
-        if (item["@type"] === "Event" || item["@type"] === "SocialEvent") {
-          const title = item.name || "";
-          const description = item.description || "";
+    if (!res.ok) return events;
+    const html = await res.text();
 
-          if (!isRelevantEvent(title, description)) continue;
-
-          const event: FounderEvent = {
-            id: `eb-${Buffer.from(item.url || title).toString("base64url").slice(0, 20)}`,
-            title,
-            description: description.slice(0, 500),
-            date: item.startDate || "",
-            endDate: item.endDate || undefined,
-            location:
-              item.location?.name ||
-              item.location?.address?.addressLocality ||
-              "London",
-            url: item.url || "",
-            source: "eventbrite",
-            category: categorizeEvent(title, description),
-            imageUrl: item.image || undefined,
-          };
-
-          events.push(event);
+    // Strategy 1: Extract from window.__SERVER_DATA__ or similar embedded JSON
+    const serverDataMatch = html.match(
+      /window\.__SERVER_DATA__\s*=\s*({[\s\S]*?});?\s*<\/script>/
+    );
+    if (serverDataMatch) {
+      try {
+        const serverData = JSON.parse(serverDataMatch[1]);
+        const searchEvents =
+          serverData?.search_data?.events?.results ||
+          serverData?.jsonld?.events ||
+          [];
+        for (const evt of searchEvents) {
+          events.push(mapEventbriteEvent(evt));
         }
+      } catch {
+        // parse failed
+      }
+    }
 
-        // Handle ItemList containing events
-        if (item["@type"] === "ItemList" && Array.isArray(item.itemListElement)) {
-          for (const listItem of item.itemListElement) {
-            const eventItem = listItem.item || listItem;
-            if (
-              eventItem["@type"] !== "Event" &&
-              eventItem["@type"] !== "SocialEvent"
-            )
-              continue;
-
-            const title = eventItem.name || "";
-            const description = eventItem.description || "";
-
-            if (!isRelevantEvent(title, description)) continue;
-
-            const event: FounderEvent = {
-              id: `eb-${Buffer.from(eventItem.url || title).toString("base64url").slice(0, 20)}`,
-              title,
-              description: description.slice(0, 500),
-              date: eventItem.startDate || "",
-              endDate: eventItem.endDate || undefined,
+    // Strategy 2: JSON-LD structured data
+    const jsonLdBlocks = [...html.matchAll(
+      /<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+    )];
+    for (const match of jsonLdBlocks) {
+      try {
+        const ld = JSON.parse(match[1]);
+        const items = Array.isArray(ld) ? ld : [ld];
+        for (const item of items) {
+          if (item["@type"] === "ItemList" && Array.isArray(item.itemListElement)) {
+            for (const li of item.itemListElement) {
+              const evt = li.item || li;
+              if (evt["@type"] === "Event" || evt["@type"] === "SocialEvent") {
+                events.push({
+                  id: `eb-${hashString(evt.url || evt.name || "")}`,
+                  title: evt.name || "",
+                  description: (evt.description || "").slice(0, 500),
+                  date: evt.startDate || "",
+                  endDate: evt.endDate || undefined,
+                  location:
+                    evt.location?.name ||
+                    evt.location?.address?.streetAddress ||
+                    evt.location?.address?.addressLocality ||
+                    "London",
+                  url: evt.url || "",
+                  source: "eventbrite",
+                  category: categorizeEvent(evt.name || "", evt.description || ""),
+                  imageUrl: typeof evt.image === "string" ? evt.image : evt.image?.url || undefined,
+                });
+              }
+            }
+          }
+          if (item["@type"] === "Event" || item["@type"] === "SocialEvent") {
+            const e = item;
+            events.push({
+              id: `eb-${hashString(e.url || e.name || "")}`,
+              title: e.name || "",
+              description: (e.description || "").slice(0, 500),
+              date: e.startDate || "",
+              endDate: e.endDate || undefined,
               location:
-                eventItem.location?.name ||
-                eventItem.location?.address?.addressLocality ||
+                e.location?.name ||
+                e.location?.address?.addressLocality ||
                 "London",
-              url: eventItem.url || "",
+              url: e.url || "",
               source: "eventbrite",
-              category: categorizeEvent(title, description),
-              imageUrl: eventItem.image || undefined,
-            };
-
-            events.push(event);
+              category: categorizeEvent(e.name || "", e.description || ""),
+              imageUrl: typeof e.image === "string" ? e.image : e.image?.url || undefined,
+            });
           }
         }
+      } catch {
+        // skip
       }
-    } catch {
-      // JSON parse failed — skip this block
-    }
-  }
-
-  // Strategy 2: Fallback regex extraction from HTML markup
-  // Eventbrite search results use predictable card patterns
-  if (events.length === 0) {
-    const cardRegex =
-      /data-testid="[^"]*event[^"]*"[\s\S]*?href="(https:\/\/www\.eventbrite\.co\.uk\/e\/[^"]+)"[\s\S]*?<h2[^>]*>(.*?)<\/h2>[\s\S]*?<p[^>]*>(.*?)<\/p>/gi;
-    let cardMatch;
-
-    while ((cardMatch = cardRegex.exec(html)) !== null) {
-      const url = cardMatch[1] || "";
-      const title = (cardMatch[2] || "").replace(/<[^>]*>/g, "").trim();
-      const description = (cardMatch[3] || "").replace(/<[^>]*>/g, "").trim();
-
-      if (!title || !isRelevantEvent(title, description)) continue;
-
-      events.push({
-        id: `eb-${Buffer.from(url || title).toString("base64url").slice(0, 20)}`,
-        title,
-        description: description.slice(0, 500),
-        date: "",
-        location: "London",
-        url,
-        source: "eventbrite",
-        category: categorizeEvent(title, description),
-      });
     }
 
-    // Strategy 3: Simpler anchor-based extraction
-    const linkRegex =
-      /href="(https:\/\/www\.eventbrite\.co\.uk\/e\/([^"]+))"/gi;
-    let linkMatch;
+    // Strategy 3: Extract event URLs and titles from links
+    const linkPattern = /href="(https:\/\/www\.eventbrite\.co\.uk\/e\/([^"?]+)[^"]*)"/gi;
     const seenUrls = new Set(events.map((e) => e.url));
-
-    while ((linkMatch = linkRegex.exec(html)) !== null) {
+    let linkMatch;
+    while ((linkMatch = linkPattern.exec(html)) !== null) {
       const url = linkMatch[1];
       if (seenUrls.has(url)) continue;
       seenUrls.add(url);
 
-      // Extract title from the slug in the URL
       const slug = linkMatch[2] || "";
-      const titleFromSlug = slug
+      const title = slug
         .replace(/-tickets-\d+.*$/, "")
         .replace(/-/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase())
         .trim();
 
-      if (!titleFromSlug || !isRelevantEvent(titleFromSlug, query)) continue;
+      if (!title || title.length < 5) continue;
 
       events.push({
-        id: `eb-${Buffer.from(url).toString("base64url").slice(0, 20)}`,
-        title: titleFromSlug.replace(/\b\w/g, (c) => c.toUpperCase()),
+        id: `eb-${hashString(url)}`,
+        title,
         description: "",
         date: "",
         location: "London",
         url,
         source: "eventbrite",
-        category: categorizeEvent(titleFromSlug, query),
+        category: categorizeEvent(title, query),
       });
     }
+  } catch {
+    // query failed
   }
 
   return events;
 }
 
-async function fetchEventbritePage(query: string): Promise<FounderEvent[]> {
-  const url = `${BASE_URL}${encodeURIComponent(query)}/`;
+function mapEventbriteEvent(evt: Record<string, unknown>): FounderEvent {
+  const title = (evt.name as string) || (evt.title as string) || "";
+  const description = (evt.description as string) || (evt.summary as string) || "";
+  const url = (evt.url as string) || "";
+  const startDate = (evt.start_date as string) || (evt.start as string) || "";
+  const venue = evt.venue as Record<string, unknown> | undefined;
+  const location = venue
+    ? (venue.name as string) || (venue.address as string) || "London"
+    : "London";
+  const image = (evt.image_url as string) || (evt.logo_url as string) || "";
 
-  try {
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-GB,en;q=0.9",
-      },
-      next: { revalidate: 3600 },
-    });
-
-    if (!response.ok) {
-      console.error(
-        `Eventbrite fetch failed for "${query}": ${response.status}`
-      );
-      return [];
-    }
-
-    const html = await response.text();
-    return parseEventsFromHTML(html, query);
-  } catch (error) {
-    console.error(`Eventbrite fetch error for "${query}":`, error);
-    return [];
-  }
+  return {
+    id: `eb-${hashString(url || title)}`,
+    title,
+    description: description.slice(0, 500),
+    date: startDate,
+    endDate: (evt.end_date as string) || undefined,
+    location,
+    url,
+    source: "eventbrite",
+    category: categorizeEvent(title, description),
+    imageUrl: image || undefined,
+  };
 }
 
-function deduplicateEvents(events: FounderEvent[]): FounderEvent[] {
-  const seen = new Map<string, FounderEvent>();
-
-  for (const event of events) {
-    // Dedupe by URL first, then by normalized title
-    const urlKey = event.url;
-    const titleKey = event.title.toLowerCase().replace(/\s+/g, " ").trim();
-
-    if (urlKey && seen.has(urlKey)) continue;
-    if (seen.has(titleKey)) continue;
-
-    if (urlKey) seen.set(urlKey, event);
-    seen.set(titleKey, event);
+function hashString(s: string): string {
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) {
+    const char = s.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
   }
+  return Math.abs(hash).toString(36);
+}
 
-  // Return unique events (use URL-keyed entries to avoid title duplicates)
-  const uniqueMap = new Map<string, FounderEvent>();
-  for (const event of seen.values()) {
-    uniqueMap.set(event.id, event);
-  }
-
-  return Array.from(uniqueMap.values());
+function dedup(events: FounderEvent[]): FounderEvent[] {
+  const seen = new Set<string>();
+  return events.filter((e) => {
+    const key = e.url || e.title.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export async function GET() {
   try {
-    // Fetch all search queries in parallel
+    // Run all searches in parallel
     const results = await Promise.allSettled(
-      SEARCH_QUERIES.map((query) => fetchEventbritePage(query))
+      SEARCH_QUERIES.map((q) => searchEventbrite(q))
     );
 
     const allEvents: FounderEvent[] = [];
-
-    for (const result of results) {
-      if (result.status === "fulfilled") {
-        allEvents.push(...result.value);
-      }
+    for (const r of results) {
+      if (r.status === "fulfilled") allEvents.push(...r.value);
     }
 
-    const uniqueEvents = deduplicateEvents(allEvents);
+    // Don't filter by isRelevantEvent — the search queries already target relevant events
+    const unique = dedup(allEvents).filter((e) => e.title.length > 3);
 
-    // Sort by date (events with dates first, then alphabetically by title)
-    uniqueEvents.sort((a, b) => {
+    unique.sort((a, b) => {
       if (a.date && b.date) return a.date.localeCompare(b.date);
       if (a.date) return -1;
       if (b.date) return 1;
@@ -244,21 +220,12 @@ export async function GET() {
     });
 
     return NextResponse.json({
-      events: uniqueEvents,
-      count: uniqueEvents.length,
+      events: unique,
+      count: unique.length,
       source: "eventbrite",
-      queries: SEARCH_QUERIES,
-      fetchedAt: new Date().toISOString(),
     });
   } catch (error) {
-    console.error("Eventbrite API route error:", error);
-    return NextResponse.json(
-      {
-        error: "Failed to fetch Eventbrite events",
-        events: [],
-        count: 0,
-      },
-      { status: 500 }
-    );
+    console.error("Eventbrite error:", error);
+    return NextResponse.json({ events: [], count: 0, source: "eventbrite" });
   }
 }
