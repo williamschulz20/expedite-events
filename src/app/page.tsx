@@ -462,6 +462,9 @@ export default function Home() {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState<Date | null>(null);
 
+  const [rsvpLoading, setRsvpLoading] = useState(false);
+  const [rsvpResult, setRsvpResult] = useState<{ succeeded: number; failed: number; total: number } | null>(null);
+
   // Fetch events
   const fetchEvents = useCallback(async () => {
     setLoading(true);
@@ -475,6 +478,24 @@ export default function Home() {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const rsvpAll = useCallback(async () => {
+    setRsvpLoading(true);
+    setRsvpResult(null);
+    try {
+      const res = await fetch("/api/rsvp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rsvpAll: true }),
+      });
+      const data = await res.json();
+      setRsvpResult(data.summary);
+    } catch {
+      setRsvpResult({ succeeded: 0, failed: 0, total: 0 });
+    } finally {
+      setRsvpLoading(false);
     }
   }, []);
 
@@ -517,19 +538,39 @@ export default function Home() {
                 nights &amp; more
               </p>
             </div>
-            <button
-              onClick={fetchEvents}
-              disabled={loading}
-              className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition hover:bg-gray-50 disabled:opacity-50"
-            >
-              <span className={loading ? "animate-spin" : ""}>
-                <RefreshIcon />
-              </span>
-              Refresh
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={rsvpAll}
+                disabled={rsvpLoading || loading}
+                className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-gray-700 disabled:opacity-50"
+              >
+                {rsvpLoading ? "RSVPing..." : "RSVP All"}
+              </button>
+              <button
+                onClick={fetchEvents}
+                disabled={loading}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition hover:bg-gray-50 disabled:opacity-50"
+              >
+                <span className={loading ? "animate-spin" : ""}>
+                  <RefreshIcon />
+                </span>
+                Refresh
+              </button>
+            </div>
           </div>
         </div>
       </header>
+
+      {/* RSVP Result Banner */}
+      {rsvpResult && (
+        <div className="mx-auto max-w-5xl px-4 pt-4 sm:px-6 lg:px-8">
+          <div className={`rounded-lg p-4 ${rsvpResult.succeeded > 0 ? "bg-green-50 border border-green-200" : "bg-amber-50 border border-amber-200"}`}>
+            <p className={`text-sm font-medium ${rsvpResult.succeeded > 0 ? "text-green-800" : "text-amber-800"}`}>
+              RSVP complete: {rsvpResult.succeeded} succeeded, {rsvpResult.failed} failed out of {rsvpResult.total} events
+            </p>
+          </div>
+        </div>
+      )}
 
       <main className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-8">
         {/* Filters + View Toggle */}
