@@ -158,6 +158,16 @@ function extractCity(location: string): string {
   return "Other";
 }
 
+// Detect if event is free or paid from title/description
+function detectPricing(title: string, desc: string): "free" | "paid" | null {
+  const text = `${title} ${desc}`.toLowerCase();
+  const freeSignals = ["free", "no cost", "complimentary", "free entry", "free event", "free admission", "free ticket", "no charge", "gratis"];
+  const paidSignals = ["£", "$", "€", "paid", "ticket price", "buy ticket", "purchase ticket", "registration fee", "early bird"];
+  if (freeSignals.some((s) => text.includes(s))) return "free";
+  if (paidSignals.some((s) => text.includes(s))) return "paid";
+  return null;
+}
+
 const TIER_STYLES = {
   hot:  { border: "border-l-red-500",   dot: "bg-red-500",   label: "Hot",  labelCls: "text-red-600 bg-red-50 ring-red-200" },
   warm: { border: "border-l-amber-400", dot: "bg-amber-400", label: "Warm", labelCls: "text-amber-700 bg-amber-50 ring-amber-200" },
@@ -488,6 +498,12 @@ function EventRow({
           <Badge cls="text-gray-500 bg-gray-50 ring-gray-200">
             {event.category}
           </Badge>
+          {(() => {
+            const pricing = detectPricing(event.title, event.description);
+            if (pricing === "free") return <Badge cls="text-emerald-700 bg-emerald-50 ring-emerald-200">Free</Badge>;
+            if (pricing === "paid") return <Badge cls="text-red-600 bg-red-50 ring-red-200">Paid</Badge>;
+            return null;
+          })()}
         </div>
 
         <p className="text-sm font-semibold text-gray-900 leading-snug">{event.title}</p>
@@ -663,6 +679,16 @@ function EventDetailModal({
             <span className="inline-flex items-center rounded-full bg-gray-50 px-2.5 py-0.5 text-[11px] font-semibold text-gray-500 ring-1 ring-inset ring-gray-200">
               {event.category}
             </span>
+            {detectPricing(event.title, event.description) === "free" && (
+              <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
+                Free
+              </span>
+            )}
+            {detectPricing(event.title, event.description) === "paid" && (
+              <span className="inline-flex items-center rounded-full bg-red-50 px-2.5 py-0.5 text-[11px] font-semibold text-red-600 ring-1 ring-inset ring-red-200">
+                Paid
+              </span>
+            )}
             {isAccepted && !isAttended && (
               <span className="inline-flex items-center rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-semibold text-blue-700 ring-1 ring-inset ring-blue-200">
                 📅 In Calendar
@@ -871,7 +897,10 @@ function EventChip({ ev, onClick }: { ev: FounderEvent; onClick: () => void }) {
       className={`w-full text-left rounded px-1.5 py-0.5 text-[10px] font-medium leading-tight transition truncate ${chipCls}`}
       title={ev.organizerName ? `${ev.title} — by ${ev.organizerName}` : ev.title}
     >
-      <span className="opacity-60 mr-1">{timeLabel}</span>{ev.title}
+      <span className="opacity-60 mr-1">{timeLabel}</span>
+      {detectPricing(ev.title, ev.description) === "free" && <span className="text-emerald-600 mr-0.5">●</span>}
+      {detectPricing(ev.title, ev.description) === "paid" && <span className="text-red-500 mr-0.5">●</span>}
+      {ev.title}
     </button>
   );
 }
