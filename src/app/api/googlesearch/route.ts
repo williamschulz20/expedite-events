@@ -210,7 +210,7 @@ async function scrapeEventPage(
               endDate: (item.endDate as string) ?? undefined,
               location: (loc as string).slice(0, 300),
               url,
-              source: "luma",
+              source: "googlesearch",
               category: categorizeEvent(
                 item.name as string,
                 (item.description as string) ?? ""
@@ -239,7 +239,7 @@ async function scrapeEventPage(
         date: ogDate,
         location: fallbackLocation,
         url,
-        source: "luma",
+        source: "googlesearch",
         category: categorizeEvent(ogTitle, ""),
       };
     }
@@ -380,7 +380,7 @@ export async function GET() {
       date: "", // unknown — shows at bottom of list
       location: r.city,
       url: r.url,
-      source: "luma",
+      source: "googlesearch",
       category: categorizeEvent(r.title, r.snippet),
       leadScore: score,
       leadTier: tier,

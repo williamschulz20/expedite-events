@@ -308,7 +308,7 @@ export async function GET() {
         endDate: dates?.endDate,
         location: conf.location,
         url: conf.url,
-        source: "luma", // closest category — shown as "Conference" via category
+        source: "conference", // closest category — shown as "Conference" via category
         category: conf.category ?? categorizeEvent(conf.name, conf.description ?? ""),
         imageUrl: undefined,
       };

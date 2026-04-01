@@ -6,7 +6,7 @@ export interface FounderEvent {
   endDate?: string;
   location: string;
   url: string; // RSVP link
-  source: "eventbrite" | "luma" | "partiful" | "meetup";
+  source: "eventbrite" | "luma" | "partiful" | "meetup" | "conference" | "websearch" | "googlesearch" | "confstech" | "f6s" | "selectusa" | "university" | "devevents" | "garysguide" | "tentimes" | "startupgrind";
   category: string; // hackathon, demo-day, networking, pitch, etc.
   imageUrl?: string;
   // Expedite lead quality scoring

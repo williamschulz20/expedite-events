@@ -108,7 +108,7 @@ function toFounderEvent(entry: DevEventsEntry): FounderEvent {
       : undefined,
     location,
     url: entry.hyperlink,
-    source: "luma",
+    source: "devevents",
     category,
   };
 }

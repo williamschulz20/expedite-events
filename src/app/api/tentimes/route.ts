@@ -113,7 +113,7 @@ function parseJsonLd(html: string, city: string): FounderEvent[] {
               : url
               ? `https://10times.com${url.startsWith("/") ? "" : "/"}${url}`
               : "",
-            source: "luma",
+            source: "tentimes",
             category: categorizeEvent(title, description),
           });
         }
@@ -217,7 +217,7 @@ function parseEventCards(html: string, city: string): FounderEvent[] {
       endDate,
       location: location.slice(0, 300),
       url,
-      source: "luma",
+      source: "tentimes",
       category: categorizeEvent(title, description),
     });
   }
@@ -276,7 +276,7 @@ function parseEventCards(html: string, city: string): FounderEvent[] {
       date,
       location: city,
       url: `https://10times.com${href}`,
-      source: "luma",
+      source: "tentimes",
       category: categorizeEvent(linkText, ""),
     });
   }

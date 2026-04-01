@@ -226,7 +226,7 @@ async function fetchCity(city: string): Promise<FounderEvent[]> {
         date: raw.date,
         location: raw.location || city,
         url: raw.url || url,
-        source: "luma" as const,
+        source: "f6s" as const,
         category: categorizeEvent(raw.title, description),
       };
     });

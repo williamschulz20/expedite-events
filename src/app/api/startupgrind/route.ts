@@ -133,7 +133,7 @@ function parseJsonLd(html: string, city: string): FounderEvent[] {
             url: url.startsWith("http")
               ? url
               : `https://www.startupgrind.com${url.startsWith("/") ? "" : "/"}${url}`,
-            source: "luma",
+            source: "startupgrind",
             category: categorizeEvent(title, description),
           });
         }
@@ -236,7 +236,7 @@ function parseEventCards(html: string, city: string): FounderEvent[] {
       endDate,
       location: location.slice(0, 300),
       url,
-      source: "luma",
+      source: "startupgrind",
       category: categorizeEvent(title, description),
     });
   }
@@ -288,7 +288,7 @@ function parseEventCards(html: string, city: string): FounderEvent[] {
       date,
       location: CITY_NAMES[city] ?? city,
       url,
-      source: "luma",
+      source: "startupgrind",
       category: categorizeEvent(linkText, ""),
     });
   }
@@ -338,7 +338,7 @@ function parseEventCards(html: string, city: string): FounderEvent[] {
       date,
       location: CITY_NAMES[city] ?? city,
       url,
-      source: "luma",
+      source: "startupgrind",
       category: categorizeEvent(linkText, ""),
     });
   }

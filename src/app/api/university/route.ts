@@ -182,7 +182,7 @@ async function scrapeEventPage(
               endDate: (item.endDate as string) ?? undefined,
               location: (loc as string).slice(0, 300),
               url,
-              source: "luma",
+              source: "university",
               category: categorizeEvent(item.name as string, (item.description as string) ?? ""),
             };
           }
@@ -208,7 +208,7 @@ async function scrapeEventPage(
         date: ogDate,
         location: fallbackLocation,
         url,
-        source: "luma",
+        source: "university",
         category: categorizeEvent(ogTitle, ogDesc ?? ""),
       };
     }
@@ -229,7 +229,7 @@ async function scrapeEventPage(
           date: "",
           location: fallbackLocation,
           url,
-          source: "luma",
+          source: "university",
           category: categorizeEvent(ogTitle, ogDesc ?? ""),
         };
       }
@@ -323,7 +323,7 @@ async function processUniversity(
       date: "",
       location: uni.location,
       url: r.url,
-      source: "luma",
+      source: "university",
       category: categorizeEvent(r.title, r.snippet),
       leadScore: score,
       leadTier: tier,

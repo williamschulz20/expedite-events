@@ -33,7 +33,7 @@ interface FounderEvent {
   endDate?: string;
   location: string;
   url: string;
-  source: "eventbrite" | "luma" | "partiful" | "meetup";
+  source: string;
   category: string;
   imageUrl?: string;
   leadScore?: number;
@@ -120,14 +120,23 @@ const SOURCE_TABS = [
   { id: "Luma",       label: "Luma" },
   { id: "Partiful",   label: "Partiful" },
   { id: "Eventbrite", label: "Eventbrite" },
+  { id: "Other",      label: "Other" },
 ] as const;
+
+const OTHER_SOURCES = new Set([
+  "conference", "websearch", "googlesearch", "confstech", "f6s",
+  "selectusa", "university", "devevents", "garysguide", "tentimes",
+  "startupgrind", "meetup",
+]);
 
 const KNOWN_CITIES = [
   "London", "Berlin", "Paris", "Amsterdam", "San Francisco",
+  "Los Angeles", "New York", "Austin", "Boston",
   "Munich", "Barcelona", "Zurich", "Stockholm", "Helsinki",
   "Lisbon", "Dublin", "Copenhagen", "Milan", "Madrid",
   "Istanbul", "Vienna", "Warsaw", "Brussels", "Hamburg",
   "Budapest", "Prague", "Geneva", "Lausanne", "Rome",
+  "Tallinn", "Riga", "Vilnius", "Oslo",
 ];
 
 function extractCity(location: string): string {
@@ -150,7 +159,19 @@ const SOURCE_STYLES: Record<string, string> = {
   luma:       "text-violet-700 bg-violet-50 ring-violet-200",
   eventbrite: "text-orange-700 bg-orange-50 ring-orange-200",
   partiful:   "text-pink-700 bg-pink-50 ring-pink-200",
+  other:      "text-teal-700 bg-teal-50 ring-teal-200",
   meetup:     "text-red-700 bg-red-50 ring-red-200",
+  conference: "text-indigo-700 bg-indigo-50 ring-indigo-200",
+  websearch:  "text-teal-700 bg-teal-50 ring-teal-200",
+  googlesearch: "text-teal-700 bg-teal-50 ring-teal-200",
+  confstech:  "text-teal-700 bg-teal-50 ring-teal-200",
+  f6s:        "text-teal-700 bg-teal-50 ring-teal-200",
+  selectusa:  "text-teal-700 bg-teal-50 ring-teal-200",
+  university: "text-teal-700 bg-teal-50 ring-teal-200",
+  devevents:  "text-teal-700 bg-teal-50 ring-teal-200",
+  garysguide: "text-teal-700 bg-teal-50 ring-teal-200",
+  tentimes:   "text-teal-700 bg-teal-50 ring-teal-200",
+  startupgrind: "text-teal-700 bg-teal-50 ring-teal-200",
 };
 
 // ---------------------------------------------------------------------------
@@ -1854,7 +1875,9 @@ export default function Home() {
     return events.filter((ev) => {
       const tierOk = tierFilter === "All" || ev.leadTier === tierFilter;
       const catOk  = activeTab  === "All" || ev.category.toLowerCase() === activeTab.toLowerCase();
-      const srcOk  = source     === "All" || ev.source.toLowerCase()   === source.toLowerCase();
+      const srcOk  = source     === "All"
+        || (source === "Other" && OTHER_SOURCES.has(ev.source))
+        || ev.source.toLowerCase() === source.toLowerCase();
       const cityOk = city       === "All" || extractCity(ev.location)  === city;
       const searchOk = !q || ev.title.toLowerCase().includes(q)
         || ev.description.toLowerCase().includes(q)
@@ -2176,7 +2199,9 @@ export default function Home() {
                     {label}
                     {id !== "All" && (
                       <span className="ml-1.5 tabular-nums opacity-60">
-                        {events.filter((e) => e.source.toLowerCase() === srcKey).length}
+                        {id === "Other"
+                          ? events.filter((e) => OTHER_SOURCES.has(e.source)).length
+                          : events.filter((e) => e.source.toLowerCase() === srcKey).length}
                       </span>
                     )}
                   </button>

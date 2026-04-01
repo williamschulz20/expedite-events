@@ -65,7 +65,7 @@ function parseJsonLd(html: string, regionLabel: string): FounderEvent[] {
           endDate,
           location: (location || "").slice(0, 300),
           url: url.startsWith("http") ? url : `https://www.garysguide.com${url}`,
-          source: "luma",
+          source: "garysguide",
           category: categorizeEvent(title, description),
         });
       }
@@ -111,7 +111,7 @@ function parseEventCards(html: string, regionLabel: string): FounderEvent[] {
       date: dateStr,
       location: regionLabel,
       url,
-      source: "luma",
+      source: "garysguide",
       category: categorizeEvent(title, ""),
     });
   }
@@ -151,7 +151,7 @@ function parseEventCards(html: string, regionLabel: string): FounderEvent[] {
       date: dateStr,
       location: venue.slice(0, 300),
       url,
-      source: "luma",
+      source: "garysguide",
       category: categorizeEvent(title, ""),
     });
   }

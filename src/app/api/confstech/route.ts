@@ -96,7 +96,7 @@ function toFounderEvent(entry: ConfsTechEntry, topic: string): FounderEvent {
     endDate: entry.endDate ? `${entry.endDate}T18:00:00Z` : undefined,
     location,
     url: entry.url,
-    source: "luma",
+    source: "confstech",
     category,
   };
 }

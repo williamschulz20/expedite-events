@@ -137,7 +137,7 @@ async function scrapeEventPage(url: string, fallbackTitle: string, fallbackLocat
               endDate: (item.endDate as string) ?? undefined,
               location: (loc as string).slice(0, 300),
               url,
-              source: "luma", // no dedicated "web" source — treated as general
+              source: "websearch", // no dedicated "web" source — treated as general
               category: categorizeEvent(item.name as string, (item.description as string) ?? ""),
             };
           }
@@ -157,7 +157,7 @@ async function scrapeEventPage(url: string, fallbackTitle: string, fallbackLocat
         date: ogDate,
         location: fallbackLocation,
         url,
-        source: "luma",
+        source: "websearch",
         category: categorizeEvent(ogTitle, ""),
       };
     }
@@ -263,7 +263,7 @@ export async function GET() {
       date: "", // unknown — shows at bottom of list
       location: r.city,
       url: r.url,
-      source: "luma",
+      source: "websearch",
       category: categorizeEvent(r.title, r.snippet),
       leadScore: score,
       leadTier: tier,
