@@ -50,6 +50,7 @@ const CITIES = [
   { slug: "austria--vienna",          label: "Vienna" },
   { slug: "norway--oslo",             label: "Oslo" },
   { slug: "latvia--riga",             label: "Riga" },
+  { slug: "united-states--los-angeles", label: "Los Angeles" },
 ];
 
 // Pages to fetch per query — gets us events further into the future

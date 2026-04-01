@@ -21,6 +21,7 @@ const UNCOVERED_CITIES = [
   "Bucharest", "Athens", "Sofia",         // South-East Europe
   "Rotterdam", "Eindhoven",              // Netherlands non-Amsterdam
   "Gothenburg", "Malmö",                  // Sweden non-Stockholm
+  "Los Angeles",                          // US West Coast
 ];
 
 // High-signal keywords that match O-1A-relevant events

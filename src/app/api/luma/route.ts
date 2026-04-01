@@ -15,7 +15,7 @@ const CITY_SLUGS = [
   // Central & Eastern Europe
   "bucharest", "sofia", "belgrade", "zagreb", "krakow",
   // North America
-  "sf", "new-york", "austin", "boston",
+  "sf", "new-york", "austin", "boston", "los-angeles",
 ];
 
 // ---------------------------------------------------------------------------

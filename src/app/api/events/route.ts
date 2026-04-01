@@ -14,6 +14,7 @@ function extractCity(location: string): string {
     "Lisbon", "Dublin", "Copenhagen", "Milan", "Madrid",
     "Istanbul", "Vienna", "Warsaw", "Brussels", "Hamburg",
     "Budapest", "Prague", "Geneva", "Lausanne", "Rome",
+    "Los Angeles",
   ];
   if (loc.includes("san francisco") || loc.includes(", ca ") || loc.includes("sf,")) return "San Francisco";
   for (const city of KNOWN_CITIES) {
@@ -87,6 +88,7 @@ async function scrapeAndUpsert(baseUrl: string) {
     const sources = [
       "eventbrite", "luma", "partiful", "conferences", "websearch",
       "googlesearch", "confstech", "f6s", "selectusa", "university",
+      "devevents", "garysguide", "tentimes", "startupgrind",
     ];
     const results = await Promise.allSettled(
       sources.map((s) =>
