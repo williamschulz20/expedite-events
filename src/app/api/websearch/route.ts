@@ -28,6 +28,10 @@ const EVENT_KEYWORDS = [
   "startup", "founder", "hackathon",
   "pitch night", "demo day", "accelerator",
   "venture capital", "tech meetup",
+  "founder dinner", "founder breakfast",
+  "tech dinner", "startup breakfast",
+  "networking dinner founders",
+  "tech workshop", "startup conference",
 ];
 
 // Domains that are actual event pages (not news articles / aggregators)

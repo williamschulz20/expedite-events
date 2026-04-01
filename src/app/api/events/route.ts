@@ -84,25 +84,24 @@ export async function GET(request: Request) {
 
 async function scrapeAndUpsert(baseUrl: string) {
   try {
-    const [eventbriteRes, lumaRes, partifulRes, conferencesRes, websearchRes] = await Promise.allSettled([
-      fetch(`${baseUrl}/api/eventbrite`).then((r) => r.json()),
-      fetch(`${baseUrl}/api/luma`).then((r) => r.json()),
-      fetch(`${baseUrl}/api/partiful`).then((r) => r.json()),
-      fetch(`${baseUrl}/api/conferences`).then((r) => r.json()),
-      fetch(`${baseUrl}/api/websearch`).then((r) => r.json()),
-    ]);
+    const sources = [
+      "eventbrite", "luma", "partiful", "conferences", "websearch",
+      "googlesearch", "confstech", "f6s", "selectusa", "university",
+    ];
+    const results = await Promise.allSettled(
+      sources.map((s) =>
+        fetch(`${baseUrl}/api/${s}`, { signal: AbortSignal.timeout(55_000) })
+          .then((r) => r.json())
+          .catch(() => ({ events: [] }))
+      )
+    );
 
     const allEvents: FounderEvent[] = [];
-    if (eventbriteRes.status === "fulfilled" && eventbriteRes.value.events)
-      allEvents.push(...eventbriteRes.value.events);
-    if (lumaRes.status === "fulfilled" && lumaRes.value.events)
-      allEvents.push(...lumaRes.value.events);
-    if (partifulRes.status === "fulfilled" && partifulRes.value.events)
-      allEvents.push(...partifulRes.value.events);
-    if (conferencesRes.status === "fulfilled" && conferencesRes.value.events)
-      allEvents.push(...conferencesRes.value.events);
-    if (websearchRes.status === "fulfilled" && websearchRes.value.events)
-      allEvents.push(...websearchRes.value.events);
+    for (const r of results) {
+      if (r.status === "fulfilled" && r.value?.events) {
+        allEvents.push(...r.value.events);
+      }
+    }
 
     // Dedup
     const seen = new Set<string>();

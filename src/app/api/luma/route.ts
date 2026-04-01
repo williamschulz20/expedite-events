@@ -22,7 +22,7 @@ const CITY_SLUGS = [
 // Community / organizer pages — these are invisible to keyword search
 // ---------------------------------------------------------------------------
 const COMMUNITY_SLUGS = [
-  // Accelerators
+  // Accelerators & programs
   "ef",                    // Entrepreneur First
   "antler",                // Antler
   "techstars",             // Techstars
@@ -30,6 +30,15 @@ const COMMUNITY_SLUGS = [
   "a16z",                  // Andreessen Horowitz
   "ycombinator",           // Y Combinator
   "entrepreneur-first",    // EF alias
+  "ondeck",                // On Deck — global founder fellowship
+  "beondeck",              // On Deck alias
+  "southparkcommons",      // South Park Commons
+  "spc",                   // SPC alias
+  "pioneer",               // Pioneer — remote accelerator
+  "500global",             // 500 Global (formerly 500 Startups)
+  "plug-and-play",         // Plug and Play
+  "founders-factory",      // Founders Factory London
+  "joinef",                // EF another alias
   // European VCs & ecosystems
   "balderton",             // Balderton Capital
   "atomico",               // Atomico
@@ -38,16 +47,63 @@ const COMMUNITY_SLUGS = [
   "point-nine",            // Point Nine Capital
   "earlybird",             // Earlybird VC
   "station-f",             // Station F Paris
+  "speedinvest",           // Speedinvest (Vienna/Berlin)
+  "northzone",             // Northzone (Nordics)
+  "creandum",              // Creandum (Nordics)
+  "byFounders",            // byFounders (Nordics)
+  "byfounders",            // byFounders lowercase alias
+  "index-ventures",        // Index Ventures
+  "fly-ventures",          // Fly Ventures Berlin
+  "project-a",             // Project A (Berlin)
+  "htgf",                  // High-Tech Gründerfonds
   // London startup scene
   "silicon-roundabout",    // Silicon Roundabout / Tech City
   "legaltech-london",
   "ai-london",
   "london-founders",
+  "founders-forum",        // Founders Forum
+  "plexal",                // Plexal (London tech hub)
+  "techround",             // TechRound events
+  "coadec",                // Coalition for a Digital Economy
+  "startupgrind-london",   // Startup Grind London
+  "tech-nation",           // Tech Nation UK
+  // Berlin & DACH
+  "berlin-founders",
+  "factory-berlin",        // Factory Berlin
+  "berlin-startup",
+  "german-accelerator",    // German Accelerator
+  // Paris & France
+  "lafrenchtech",          // La French Tech
+  "numa",                  // NUMA Paris
+  // Nordics & Baltics
+  "latitude59",            // Latitude59 Tallinn
+  "garage48",              // Garage48 (Baltic hackathons)
+  "nordicmakers",          // Nordic Makers
+  "slush",                 // Slush Helsinki
+  "sting",                 // Sting accelerator Stockholm
+  "startup-estonia",       // Startup Estonia
+  "startup-wise-guys",     // Startup Wise Guys (Baltics)
   // AI / deep tech
   "ai-safety",
   "deeptech-founders",
   "llm-community",
   "ai-builders",
+  "huggingface",           // Hugging Face community
+  "eleutherai",            // EleutherAI
+  "aicamp",                // AI Camp meetups
+  // Founder communities & networks
+  "founders-network",
+  "startup-grind",         // Startup Grind global
+  "first-round",           // First Round Capital
+  "general-catalyst",      // General Catalyst
+  "lsvp",                  // Lightspeed VP
+  "nfx",                   // NFX (network effects VC)
+  "villageglobal",         // Village Global
+  "techstars-london",
+  "techstars-berlin",
+  "angels-london",
+  "founderscafe",          // Founders Cafe
+  "indie-hackers",         // Indie Hackers
 ];
 
 // ---------------------------------------------------------------------------
@@ -127,20 +183,23 @@ function parseEntry(entry: LumaEntry, fallbackCity: string): LumaFounderEvent | 
 
   const id = `luma-${e.api_id ?? hashString(title)}`;
 
-  // Build URL: prefer the human-readable slug, fall back to api_id
+  // Build URL: prefer the human-readable slug
+  // Luma resolves: lu.ma/<slug> for slugs, lu.ma/event/<api_id> for API IDs
+  // lu.ma/evt-xxxxx does NOT work — must use lu.ma/event/evt-xxxxx
   let url: string;
   if (e.url && e.url.startsWith("http")) {
     url = e.url;
   } else if (e.url && e.url.length > 3 && !e.url.startsWith("evt-")) {
-    // Looks like a valid slug (not an API ID)
+    // Valid human-readable slug
     url = `https://lu.ma/${e.url}`;
   } else if (e.api_id) {
-    // Use api_id directly — Luma resolves these
-    url = `https://lu.ma/${e.api_id}`;
+    // API ID like evt-xxxxx — use /event/ path which Luma resolves
+    url = `https://lu.ma/event/${e.api_id}`;
   } else if (e.url) {
-    url = `https://lu.ma/${e.url}`;
+    // evt- prefixed url field — also use /event/ path
+    url = `https://lu.ma/event/${e.url}`;
   } else {
-    url = `https://lu.ma/${fallbackCity}`;
+    url = `https://lu.ma/discover`;
   }
 
   // Extract primary host info
@@ -417,7 +476,16 @@ async function fetchFromOfficialAPI(): Promise<LumaFounderEvent[]> {
         if (!title) continue;
 
         const id = (evt.api_id as string) || (evt.id as string) || hashString(title);
-        const slug = (evt.url as string) || id;
+        const rawSlug = (evt.url as string) || "";
+        let eventUrl: string;
+        if (rawSlug.startsWith("http")) {
+          eventUrl = rawSlug;
+        } else if (rawSlug && !rawSlug.startsWith("evt-")) {
+          eventUrl = `https://lu.ma/${rawSlug}`;
+        } else {
+          // evt- prefixed or raw api_id — use /event/ path
+          eventUrl = `https://lu.ma/event/${rawSlug || id}`;
+        }
 
         events.push({
           id: `luma-official-${id}`,
@@ -426,7 +494,7 @@ async function fetchFromOfficialAPI(): Promise<LumaFounderEvent[]> {
           date: (evt.start_at as string) || "",
           endDate: (evt.end_at as string) || undefined,
           location: extractLocation(evt) || "London",
-          url: slug.startsWith("http") ? slug : `https://lu.ma/${slug}`,
+          url: eventUrl,
           source: "luma",
           category: categorizeEvent(title, (evt.description as string) || ""),
           imageUrl: (evt.cover_url as string) || undefined,
