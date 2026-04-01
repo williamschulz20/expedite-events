@@ -1760,11 +1760,16 @@ export default function Home() {
     }
   }, []);
 
-  const rsvpAll = useCallback(async () => {
+  const rsvpFiltered = useCallback(async (eventIds: string[]) => {
+    if (eventIds.length === 0) return;
     setRsvpLoading(true);
     setRsvpResult(null);
     try {
-      const res  = await fetch("/api/rsvp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rsvpAll: true }) });
+      const res = await fetch("/api/rsvp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventIds }),
+      });
       const data = await res.json();
       setRsvpResult(data.summary);
     } catch {
@@ -2013,12 +2018,12 @@ export default function Home() {
               Refresh
             </button>
             <button
-              onClick={rsvpAll}
-              disabled={rsvpLoading || loading}
-              title="Auto-RSVP to all hot & warm events via Luma/Eventbrite"
+              onClick={() => rsvpFiltered(sortedEvents.map((e) => e.id))}
+              disabled={rsvpLoading || loading || sortedEvents.length === 0}
+              title={`RSVP to all ${sortedEvents.length} events matching your current filters`}
               className="inline-flex items-center gap-1.5 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-gray-700 disabled:opacity-40"
             >
-              {rsvpLoading ? "RSVPing…" : "RSVP All"}
+              {rsvpLoading ? "RSVPing…" : `RSVP All Selected (${sortedEvents.length})`}
             </button>
 
             {/* Identity avatar */}

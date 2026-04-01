@@ -154,7 +154,7 @@ async function rsvpEventbrite(event: FounderEvent): Promise<RSVPResult> {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { eventId, rsvpAll } = body as { eventId?: string; rsvpAll?: boolean };
+    const { eventId, eventIds, rsvpAll } = body as { eventId?: string; eventIds?: string[]; rsvpAll?: boolean };
 
     // Fetch all events
     const baseUrl = new URL(request.url).origin;
@@ -165,10 +165,13 @@ export async function POST(request: Request) {
     let toRsvp: FounderEvent[];
     if (rsvpAll) {
       toRsvp = events;
+    } else if (eventIds && eventIds.length > 0) {
+      const idSet = new Set(eventIds);
+      toRsvp = events.filter((e) => idSet.has(e.id));
     } else if (eventId) {
       toRsvp = events.filter((e) => e.id === eventId);
     } else {
-      return NextResponse.json({ error: "Provide eventId or rsvpAll: true" }, { status: 400 });
+      return NextResponse.json({ error: "Provide eventId, eventIds[], or rsvpAll: true" }, { status: 400 });
     }
 
     // RSVP to each event based on source
