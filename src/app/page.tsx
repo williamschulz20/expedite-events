@@ -116,15 +116,16 @@ const TIER_TABS = [
 ] as const;
 
 const SOURCE_TABS = [
-  { id: "All",        label: "All sources" },
-  { id: "Luma",       label: "Luma" },
-  { id: "Partiful",   label: "Partiful" },
-  { id: "Eventbrite", label: "Eventbrite" },
-  { id: "Other",      label: "Other" },
+  { id: "All",         label: "All sources" },
+  { id: "Luma",        label: "Luma" },
+  { id: "Eventbrite",  label: "Eventbrite" },
+  { id: "Partiful",    label: "Partiful" },
+  { id: "Conference",  label: "Conferences" },
+  { id: "Other",       label: "Other" },
 ] as const;
 
 const OTHER_SOURCES = new Set([
-  "conference", "websearch", "googlesearch", "confstech", "f6s",
+  "websearch", "googlesearch", "confstech", "f6s",
   "selectusa", "university", "devevents", "garysguide", "tentimes",
   "startupgrind", "meetup",
 ]);
@@ -2020,10 +2021,10 @@ export default function Home() {
             <button
               onClick={() => rsvpFiltered(sortedEvents.map((e) => e.id))}
               disabled={rsvpLoading || loading || sortedEvents.length === 0}
-              title={`RSVP to all ${sortedEvents.length} events matching your current filters`}
+              title={`RSVP to ${sortedEvents.length} events matching your current filters`}
               className="inline-flex items-center gap-1.5 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-gray-700 disabled:opacity-40"
             >
-              {rsvpLoading ? "RSVPing…" : `RSVP All Selected (${sortedEvents.length})`}
+              {rsvpLoading ? "RSVPing…" : `RSVP Filtered (${sortedEvents.length})`}
             </button>
 
             {/* Identity avatar */}

@@ -4,6 +4,28 @@ import { supabase } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
 
+// Remap source from external_id prefix for old cached data tagged as "luma"
+function remapSource(externalId: string, dbSource: string): string {
+  if (dbSource !== "luma") return dbSource;
+  // Detect real source from ID prefix
+  if (externalId.startsWith("eb-")) return "eventbrite";
+  if (externalId.startsWith("conf-")) return "confstech";
+  if (externalId.startsWith("devev-")) return "devevents";
+  if (externalId.startsWith("f6s-")) return "f6s";
+  if (externalId.startsWith("gg-")) return "garysguide";
+  if (externalId.startsWith("gsearch-")) return "googlesearch";
+  if (externalId.startsWith("web-")) return "websearch";
+  if (externalId.startsWith("10t-")) return "tentimes";
+  if (externalId.startsWith("sg-")) return "startupgrind";
+  if (externalId.startsWith("selectusa-")) return "selectusa";
+  if (externalId.startsWith("uni-")) return "university";
+  if (externalId.startsWith("partiful-")) return "partiful";
+  // Conference IDs are like "latitude59-2026", "slush-2026", etc.
+  const confIds = ["latitude59", "slush", "web-summit", "tnw", "noah", "viva", "collision", "techcrunch", "rise-conf", "wolves", "arctic15", "login-", "riga-comm", "oslo-innovation", "sifted", "london-tech-week", "bits-pretzels", "pirate-summit", "pioneers", "south-summit", "websummit", "startup-grind", "tech-open-air", "tallinn-digital"];
+  if (confIds.some((c) => externalId.startsWith(c))) return "conference";
+  return "luma"; // genuinely from Luma
+}
+
 // Extract city name from location string
 function extractCity(location: string): string {
   if (!location) return "";
@@ -60,7 +82,7 @@ export async function GET(request: Request) {
       endDate: row.ends_at ?? undefined,
       location: row.location ?? "",
       url: row.url,
-      source: row.source,
+      source: remapSource(row.external_id, row.source),
       category: row.category ?? "general",
       imageUrl: row.image_url ?? undefined,
       leadScore: row.lead_score ?? undefined,
