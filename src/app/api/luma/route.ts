@@ -1,242 +1,438 @@
 import { NextResponse } from "next/server";
-import {
-  FounderEvent,
-  isRelevantEvent,
-  categorizeEvent,
-} from "@/lib/types";
+import { FounderEvent, categorizeEvent } from "@/lib/types";
 
-// Luma API / scraping configuration
-const LONDON_LAT = 51.5074;
-const LONDON_LNG = -0.1278;
-const GEO_RADIUS = "30km";
-
-const SEARCH_TERMS = [
-  "founder",
-  "startup",
-  "tech",
-  "pitch",
-  "hackathon",
-  "networking",
-  "demo day",
-  "investor",
-  "AI",
-  "venture capital",
-  "fintech",
-  "SaaS",
-  "entrepreneur",
-  "accelerator",
-  "seed",
-  "fundraising",
+// ---------------------------------------------------------------------------
+// City slugs — scraped via __NEXT_DATA__ + paginated place API
+// ---------------------------------------------------------------------------
+const CITY_SLUGS = [
+  // Western Europe
+  "london", "amsterdam", "berlin", "paris", "munich", "zurich", "stockholm",
+  "barcelona", "lisbon", "dublin", "helsinki", "copenhagen", "milan", "madrid",
+  "vienna", "warsaw", "brussels", "budapest", "prague", "rome", "hamburg",
+  "geneva", "lausanne", "istanbul",
+  // Baltics & Nordics
+  "tallinn", "riga", "vilnius", "oslo",
+  // Central & Eastern Europe
+  "bucharest", "sofia", "belgrade", "zagreb", "krakow",
+  // North America
+  "sf", "new-york", "austin", "boston",
 ];
 
 // ---------------------------------------------------------------------------
-// Strategy 1: Luma paginated discover API
+// Community / organizer pages — these are invisible to keyword search
 // ---------------------------------------------------------------------------
-async function fetchFromDiscoverAPI(): Promise<FounderEvent[]> {
-  const allEvents: FounderEvent[] = [];
-  const now = new Date();
-  const threeMonths = new Date(now);
-  threeMonths.setMonth(threeMonths.getMonth() + 3);
+const COMMUNITY_SLUGS = [
+  // Accelerators
+  "ef",                    // Entrepreneur First
+  "antler",                // Antler
+  "techstars",             // Techstars
+  "seedcamp",              // Seedcamp
+  "a16z",                  // Andreessen Horowitz
+  "ycombinator",           // Y Combinator
+  "entrepreneur-first",    // EF alias
+  // European VCs & ecosystems
+  "balderton",             // Balderton Capital
+  "atomico",               // Atomico
+  "notion-capital",        // Notion Capital
+  "cherry-ventures",       // Cherry Ventures
+  "point-nine",            // Point Nine Capital
+  "earlybird",             // Earlybird VC
+  "station-f",             // Station F Paris
+  // London startup scene
+  "silicon-roundabout",    // Silicon Roundabout / Tech City
+  "legaltech-london",
+  "ai-london",
+  "london-founders",
+  // AI / deep tech
+  "ai-safety",
+  "deeptech-founders",
+  "llm-community",
+  "ai-builders",
+];
 
-  // Fetch multiple pages to cover 3 months
-  for (let page = 0; page < 3; page++) {
-    const url = new URL("https://api.lu.ma/discover/get-paginated-events");
-    url.searchParams.set("geo_latitude", String(LONDON_LAT));
-    url.searchParams.set("geo_longitude", String(LONDON_LNG));
-    url.searchParams.set("geo_radius", GEO_RADIUS);
-    url.searchParams.set("pagination_limit", "100");
-    if (page > 0) url.searchParams.set("pagination_offset", String(page * 100));
+// ---------------------------------------------------------------------------
+// Extended LumaEntry interface — includes host and calendar info
+// ---------------------------------------------------------------------------
+interface LumaHost {
+  name?: string;
+  api_id?: string;
+  username?: string;
+  linkedin_handle?: string;
+  twitter_handle?: string;
+  website?: string;
+  bio_short?: string;
+  avatar_url?: string;
+}
 
+interface LumaCalendar {
+  name?: string;
+  api_id?: string;
+  slug?: string;
+  geo_city?: string;
+  linkedin_handle?: string;
+  description_short?: string;
+}
+
+interface LumaEntry {
+  event?: {
+    api_id?: string;
+    name?: string;
+    description?: string;
+    start_at?: string;
+    end_at?: string;
+    url?: string;
+    cover_url?: string;
+    geo_address_info?: {
+      full_address?: string;
+      city?: string;
+      address?: string;
+      localized?: Record<string, { full_address?: string }>;
+    };
+  };
+  cover_image?: { url?: string };
+  hosts?: LumaHost[];
+  calendar?: LumaCalendar;
+}
+
+// Extended FounderEvent with organizer details for internal use
+export interface LumaFounderEvent extends FounderEvent {
+  organizerName?: string;
+  organizerLumaId?: string;
+  organizerLinkedin?: string;
+  organizerUsername?: string;
+  organizerAvatarUrl?: string;
+  organizerWebsite?: string;
+}
+
+const USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+
+// ---------------------------------------------------------------------------
+// Parse a raw Luma entry into a FounderEvent (with organizer info)
+// ---------------------------------------------------------------------------
+function parseEntry(entry: LumaEntry, fallbackCity: string): LumaFounderEvent | null {
+  const e = entry.event;
+  if (!e?.name) return null;
+
+  const title = e.name.slice(0, 200);
+  const description = (e.description ?? "").replace(/<[^>]*>/g, "").slice(0, 800);
+  const geo = e.geo_address_info;
+  const location =
+    geo?.localized?.["en-GB"]?.full_address ??
+    geo?.localized?.["en"]?.full_address ??
+    geo?.full_address ??
+    geo?.address ??
+    geo?.city ??
+    fallbackCity;
+
+  const id = `luma-${e.api_id ?? hashString(title)}`;
+
+  // Build URL: prefer the human-readable slug, fall back to api_id
+  let url: string;
+  if (e.url && e.url.startsWith("http")) {
+    url = e.url;
+  } else if (e.url && e.url.length > 3 && !e.url.startsWith("evt-")) {
+    // Looks like a valid slug (not an API ID)
+    url = `https://lu.ma/${e.url}`;
+  } else if (e.api_id) {
+    // Use api_id directly — Luma resolves these
+    url = `https://lu.ma/${e.api_id}`;
+  } else if (e.url) {
+    url = `https://lu.ma/${e.url}`;
+  } else {
+    url = `https://lu.ma/${fallbackCity}`;
+  }
+
+  // Extract primary host info
+  const primaryHost = entry.hosts?.[0];
+  const organizerName = primaryHost?.name ?? entry.calendar?.name ?? undefined;
+  const organizerLumaId = primaryHost?.api_id ?? undefined;
+  const organizerLinkedin = primaryHost?.linkedin_handle ?? entry.calendar?.linkedin_handle ?? undefined;
+  const organizerUsername = primaryHost?.username ?? entry.calendar?.slug ?? undefined;
+  const organizerAvatarUrl = primaryHost?.avatar_url ?? undefined;
+  const organizerWebsite = primaryHost?.website ?? undefined;
+
+  return {
+    id,
+    title,
+    description,
+    date: e.start_at ?? "",
+    endDate: e.end_at ?? undefined,
+    location: (location ?? "").slice(0, 300),
+    url,
+    source: "luma",
+    category: categorizeEvent(title, description),
+    imageUrl: entry.cover_image?.url ?? e.cover_url ?? undefined,
+    organizerName,
+    organizerLumaId,
+    organizerLinkedin,
+    organizerUsername,
+    organizerAvatarUrl,
+    organizerWebsite,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Paginate through Luma's place API to get ALL city events
+// ---------------------------------------------------------------------------
+async function paginatePlaceApi(
+  placeApiId: string,
+  initialCursor: string | null,
+  fallbackCity: string
+): Promise<LumaFounderEvent[]> {
+  const events: LumaFounderEvent[] = [];
+  const cutoff = new Date();
+  cutoff.setFullYear(cutoff.getFullYear() + 1);
+
+  let cursor = initialCursor;
+  let page = 0;
+  const MAX_PAGES = 8;
+
+  while (page < MAX_PAGES) {
+    page++;
     try {
-      const res = await fetch(url.toString(), {
-        headers: {
-          Accept: "application/json",
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        },
-        signal: AbortSignal.timeout(10_000),
+      const params = new URLSearchParams({
+        placeApiId,
+        pagination_limit: "50",
+        ...(cursor ? { pagination_cursor: cursor } : {}),
       });
 
-      if (!res.ok) break;
+      const res = await fetch(
+        `https://api.lu.ma/api/v1/place/get-items?${params}`,
+        {
+          headers: {
+            Accept: "application/json",
+            "User-Agent": USER_AGENT,
+            "x-luma-web-url": `https://lu.ma/${fallbackCity}`,
+          },
+          signal: AbortSignal.timeout(10_000),
+        }
+      );
 
-      const data = await res.json();
-      const pageEvents = parseLumaAPIResponse(data);
-      allEvents.push(...pageEvents);
-      if (pageEvents.length < 50) break; // no more pages
+      if (!res.ok) break;
+      const data = await res.json() as Record<string, unknown>;
+      const entries = Array.isArray(data.entries) ? (data.entries as LumaEntry[]) : [];
+
+      if (entries.length === 0) break;
+
+      for (const entry of entries) {
+        const evt = parseEntry(entry, fallbackCity);
+        if (evt) events.push(evt);
+      }
+
+      const last = entries[entries.length - 1];
+      if (last?.event?.start_at && new Date(last.event.start_at) > cutoff) break;
+
+      cursor = typeof data.next_cursor === "string" ? data.next_cursor : null;
+      if (!cursor || data.has_more === false) break;
     } catch {
       break;
     }
   }
 
-  return allEvents;
+  return events;
 }
 
 // ---------------------------------------------------------------------------
-// Strategy 2: Luma public search API
+// Scrape a city page: __NEXT_DATA__ + paginate via place API
 // ---------------------------------------------------------------------------
-async function fetchFromSearchAPI(): Promise<FounderEvent[]> {
-  const allEvents: FounderEvent[] = [];
-  const seenIds = new Set<string>();
+async function fetchCity(citySlug: string): Promise<LumaFounderEvent[]> {
+  const allEvents: LumaFounderEvent[] = [];
 
-  for (const term of SEARCH_TERMS) {
-    try {
-      const url = new URL("https://api.lu.ma/public/v2/event/search");
-      url.searchParams.set("query", term);
-      url.searchParams.set("geo_latitude", String(LONDON_LAT));
-      url.searchParams.set("geo_longitude", String(LONDON_LNG));
-      url.searchParams.set("geo_radius", GEO_RADIUS);
-
-      const res = await fetch(url.toString(), {
-        headers: {
-          Accept: "application/json",
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        },
-        signal: AbortSignal.timeout(8_000),
-      });
-
-      if (!res.ok) continue;
-
-      const data = await res.json();
-      const events = parseLumaAPIResponse(data);
-      for (const evt of events) {
-        if (!seenIds.has(evt.id)) {
-          seenIds.add(evt.id);
-          allEvents.push(evt);
-        }
-      }
-    } catch {
-      // Skip failed search terms
-    }
-  }
-
-  return allEvents;
-}
-
-// ---------------------------------------------------------------------------
-// Strategy 3: Scrape Luma discover page for London
-// ---------------------------------------------------------------------------
-async function scrapeDiscoverPage(): Promise<FounderEvent[]> {
-  const allEvents: FounderEvent[] = [];
-  const seenIds = new Set<string>();
-
-  const urls = [
-    "https://lu.ma/discover/london",
-    ...SEARCH_TERMS.slice(0, 3).map(
-      (term) =>
-        `https://lu.ma/discover?query=${encodeURIComponent(term)}&near=London`
-    ),
-  ];
-
-  for (const pageUrl of urls) {
-    try {
-      const res = await fetch(pageUrl, {
-        headers: {
-          Accept: "text/html",
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        },
-        signal: AbortSignal.timeout(10_000),
-      });
-
-      if (!res.ok) continue;
-
-      const html = await res.text();
-      const events = parseHTML(html);
-      for (const evt of events) {
-        if (!seenIds.has(evt.id)) {
-          seenIds.add(evt.id);
-          allEvents.push(evt);
-        }
-      }
-    } catch {
-      // Skip failed pages
-    }
-  }
-
-  return allEvents;
-}
-
-// ---------------------------------------------------------------------------
-// Strategy 4: Scrape Luma's Next.js data payload (__NEXT_DATA__)
-// ---------------------------------------------------------------------------
-async function scrapeNextData(): Promise<FounderEvent[]> {
   try {
-    const res = await fetch("https://lu.ma/discover/london", {
+    const res = await fetch(`https://lu.ma/${citySlug}`, {
       headers: {
-        Accept: "text/html",
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml",
+        "User-Agent": USER_AGENT,
+        "Accept-Language": "en-GB,en;q=0.9",
       },
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(14_000),
     });
 
     if (!res.ok) return [];
-
     const html = await res.text();
 
-    // Look for __NEXT_DATA__ or embedded JSON data
-    const nextDataMatch = html.match(
-      /<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/
-    );
-    if (!nextDataMatch) return [];
+    const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([^<]+)<\/script>/);
+    if (!match) return [];
 
-    const nextData = JSON.parse(nextDataMatch[1]);
-    const events: FounderEvent[] = [];
+    const nextData = JSON.parse(match[1]);
+    const pageData = nextData?.props?.pageProps?.initialData?.data ?? {};
 
-    // Traverse the Next.js data looking for event-like objects
-    const extractEvents = (obj: unknown, depth = 0): void => {
-      if (depth > 10 || !obj || typeof obj !== "object") return;
+    const initialEntries: LumaEntry[] = Array.isArray(pageData.events) ? pageData.events : [];
+    for (const entry of initialEntries) {
+      const evt = parseEntry(entry, citySlug);
+      if (evt) allEvents.push(evt);
+    }
 
-      if (Array.isArray(obj)) {
-        for (const item of obj) extractEvents(item, depth + 1);
-        return;
-      }
+    const placeApiId: string | undefined =
+      pageData?.place?.api_id ??
+      pageData?.api_id;
 
-      const record = obj as Record<string, unknown>;
+    if (placeApiId) {
+      const cursor: string | null = typeof pageData.next_cursor === "string"
+        ? pageData.next_cursor
+        : null;
+      const more = await paginatePlaceApi(placeApiId, cursor, citySlug);
+      allEvents.push(...more);
+    }
+  } catch {
+    // fail silently
+  }
 
-      // Look for objects with event-like properties
-      if (
-        typeof record.name === "string" &&
-        (typeof record.start_at === "string" ||
-          typeof record.event_id === "string" ||
-          typeof record.url === "string")
-      ) {
-        const title = (record.name as string) || "";
-        const description = (record.description as string) || "";
-        const id =
-          (record.event_id as string) ||
-          (record.api_id as string) ||
-          (record.id as string) ||
-          title.toLowerCase().replace(/\s+/g, "-");
+  return allEvents;
+}
 
-        if (title && isRelevantEvent(title, description)) {
-          const slug = (record.url as string) || id;
-          events.push({
-            id: `luma-${id}`,
-            title,
-            description: description.slice(0, 500),
-            date: (record.start_at as string) || "",
-            endDate: (record.end_at as string) || undefined,
-            location:
-              extractLocation(record) || "London",
-            url: slug.startsWith("http")
-              ? slug
-              : `https://lu.ma/${slug}`,
-            source: "luma",
-            category: categorizeEvent(title, description),
-            imageUrl: (record.cover_url as string) || undefined,
-          });
+// ---------------------------------------------------------------------------
+// Paginate through Luma's calendar API to get all community events
+// ---------------------------------------------------------------------------
+async function paginateCalendarApi(
+  calendarApiId: string,
+  fallbackName: string
+): Promise<LumaFounderEvent[]> {
+  const events: LumaFounderEvent[] = [];
+  let cursor: string | null = null;
+  let page = 0;
+  const MAX_PAGES = 5;
+
+  while (page < MAX_PAGES) {
+    page++;
+    try {
+      const params = new URLSearchParams({
+        calendarApiId,
+        pagination_limit: "50",
+        ...(cursor ? { pagination_cursor: cursor } : {}),
+      });
+
+      const res = await fetch(
+        `https://api.lu.ma/api/v1/calendar/get-items?${params}`,
+        {
+          headers: {
+            Accept: "application/json",
+            "User-Agent": USER_AGENT,
+          },
+          signal: AbortSignal.timeout(10_000),
         }
+      );
+
+      if (!res.ok) break;
+      const data = await res.json() as Record<string, unknown>;
+      const entries = Array.isArray(data.entries) ? (data.entries as LumaEntry[]) : [];
+
+      if (entries.length === 0) break;
+
+      for (const entry of entries) {
+        const evt = parseEntry(entry, fallbackName);
+        if (evt) events.push(evt);
       }
 
-      // Recurse into all values
-      for (const val of Object.values(record)) {
-        extractEvents(val, depth + 1);
-      }
-    };
+      cursor = typeof data.next_cursor === "string" ? data.next_cursor : null;
+      if (!cursor || data.has_more === false) break;
+    } catch {
+      break;
+    }
+  }
 
-    extractEvents(nextData);
+  return events;
+}
+
+// ---------------------------------------------------------------------------
+// Scrape a community/organizer page and paginate via calendar API
+// ---------------------------------------------------------------------------
+async function fetchCommunity(slug: string): Promise<LumaFounderEvent[]> {
+  const allEvents: LumaFounderEvent[] = [];
+
+  try {
+    const res = await fetch(`https://lu.ma/${slug}`, {
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        "User-Agent": USER_AGENT,
+        "Accept-Language": "en-GB,en;q=0.9",
+      },
+      signal: AbortSignal.timeout(12_000),
+    });
+
+    if (!res.ok) return [];
+    const html = await res.text();
+
+    const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([^<]+)<\/script>/);
+    if (!match) return [];
+
+    const nextData = JSON.parse(match[1]);
+    const pageData = nextData?.props?.pageProps?.initialData?.data ?? {};
+
+    const initialEntries: LumaEntry[] = Array.isArray(pageData.events)
+      ? pageData.events
+      : Array.isArray(pageData.event_list)
+      ? pageData.event_list
+      : [];
+
+    for (const entry of initialEntries) {
+      const evt = parseEntry(entry, slug);
+      if (evt) allEvents.push(evt);
+    }
+
+    const calendarApiId: string | undefined =
+      pageData?.calendar?.api_id ??
+      pageData?.community?.calendar_api_id ??
+      pageData?.host?.calendar_api_id ??
+      pageData?.api_id;
+
+    if (calendarApiId) {
+      const more = await paginateCalendarApi(calendarApiId, slug);
+      allEvents.push(...more);
+    }
+  } catch {
+    // Community page may not exist — fail silently
+  }
+
+  return allEvents;
+}
+
+// ---------------------------------------------------------------------------
+// Official Luma API (requires LUMA_API_KEY — optional bonus source)
+// ---------------------------------------------------------------------------
+async function fetchFromOfficialAPI(): Promise<LumaFounderEvent[]> {
+  const apiKey = process.env.LUMA_API_KEY;
+  if (!apiKey) return [];
+
+  try {
+    const res = await fetch(
+      "https://public-api.luma.com/v1/calendar/list-events?pagination_limit=100",
+      {
+        headers: { "x-luma-api-key": apiKey, Accept: "application/json" },
+        signal: AbortSignal.timeout(10_000),
+      }
+    );
+    if (!res.ok) return [];
+
+    const data = await res.json() as Record<string, unknown>;
+    const entries: unknown[] = Array.isArray(data.entries) ? data.entries : [];
+
+    const events: LumaFounderEvent[] = [];
+    for (const raw of entries) {
+      try {
+        const entry = raw as Record<string, unknown>;
+        const evt = (typeof entry.event === "object" && entry.event ? entry.event : entry) as Record<string, unknown>;
+        const title = (evt.name as string) || (evt.title as string) || "";
+        if (!title) continue;
+
+        const id = (evt.api_id as string) || (evt.id as string) || hashString(title);
+        const slug = (evt.url as string) || id;
+
+        events.push({
+          id: `luma-official-${id}`,
+          title,
+          description: ((evt.description as string) || "").slice(0, 500),
+          date: (evt.start_at as string) || "",
+          endDate: (evt.end_at as string) || undefined,
+          location: extractLocation(evt) || "London",
+          url: slug.startsWith("http") ? slug : `https://lu.ma/${slug}`,
+          source: "luma",
+          category: categorizeEvent(title, (evt.description as string) || ""),
+          imageUrl: (evt.cover_url as string) || undefined,
+        });
+      } catch { /* skip */ }
+    }
     return events;
   } catch {
     return [];
@@ -246,7 +442,6 @@ async function scrapeNextData(): Promise<FounderEvent[]> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
 function extractLocation(record: Record<string, unknown>): string {
   if (typeof record.geo_address_info === "object" && record.geo_address_info) {
     const geo = record.geo_address_info as Record<string, unknown>;
@@ -255,181 +450,18 @@ function extractLocation(record: Record<string, unknown>): string {
   }
   if (typeof record.location === "string") return record.location;
   if (typeof record.address === "string") return record.address;
-  if (typeof record.geo_address === "string") return record.geo_address;
   return "";
 }
 
-/** Parse a Luma API JSON response into FounderEvent[] */
-function parseLumaAPIResponse(data: unknown): FounderEvent[] {
-  const events: FounderEvent[] = [];
-  if (!data || typeof data !== "object") return events;
-
-  const record = data as Record<string, unknown>;
-
-  // Luma wraps events in different shapes — try common structures
-  const entries: unknown[] = [];
-  if (Array.isArray(record.data)) entries.push(...record.data);
-  if (Array.isArray(record.events)) entries.push(...record.events);
-  if (Array.isArray(record.entries)) entries.push(...record.entries);
-  if (Array.isArray(record.results)) entries.push(...record.results);
-
-  for (const raw of entries) {
-    try {
-      const entry = raw as Record<string, unknown>;
-      // Event may be nested under entry.event
-      const evt = (
-        typeof entry.event === "object" && entry.event
-          ? entry.event
-          : entry
-      ) as Record<string, unknown>;
-
-      const title = (evt.name as string) || (evt.title as string) || "";
-      const description =
-        (evt.description as string) ||
-        (evt.description_short as string) ||
-        "";
-
-      if (!title) continue;
-      if (!isRelevantEvent(title, description)) continue;
-
-      const id =
-        (evt.api_id as string) ||
-        (evt.event_id as string) ||
-        (evt.id as string) ||
-        title.toLowerCase().replace(/\s+/g, "-");
-      const slug = (evt.url as string) || id;
-
-      events.push({
-        id: `luma-${id}`,
-        title,
-        description: description.slice(0, 500),
-        date: (evt.start_at as string) || (evt.date as string) || "",
-        endDate: (evt.end_at as string) || undefined,
-        location: extractLocation(evt) || "London",
-        url: slug.startsWith("http") ? slug : `https://lu.ma/${slug}`,
-        source: "luma",
-        category: categorizeEvent(title, description),
-        imageUrl:
-          (evt.cover_url as string) ||
-          (evt.image_url as string) ||
-          undefined,
-      });
-    } catch {
-      // Skip malformed entries
-    }
+function hashString(s: string): string {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = Math.imul(31, h) + s.charCodeAt(i) | 0;
   }
-
-  return events;
+  return Math.abs(h).toString(36);
 }
 
-/** Parse HTML from Luma discover pages to extract event data */
-function parseHTML(html: string): FounderEvent[] {
-  const events: FounderEvent[] = [];
-
-  // Try JSON-LD structured data first
-  const jsonLdBlocks = html.matchAll(
-    /<script type="application\/ld\+json">([\s\S]*?)<\/script>/g
-  );
-  for (const match of jsonLdBlocks) {
-    try {
-      const ld = JSON.parse(match[1]);
-      const items = Array.isArray(ld) ? ld : [ld];
-      for (const item of items) {
-        if (item["@type"] === "Event" && item.name) {
-          const title = item.name || "";
-          const description = item.description || "";
-          if (!isRelevantEvent(title, description)) continue;
-
-          events.push({
-            id: `luma-${(item.url || title).replace(/[^a-z0-9]/gi, "-").toLowerCase()}`,
-            title,
-            description: description.slice(0, 500),
-            date: item.startDate || "",
-            endDate: item.endDate || undefined,
-            location:
-              item.location?.name ||
-              item.location?.address?.addressLocality ||
-              "London",
-            url: item.url || "",
-            source: "luma",
-            category: categorizeEvent(title, description),
-            imageUrl: item.image || undefined,
-          });
-        }
-      }
-    } catch {
-      // Skip malformed JSON-LD
-    }
-  }
-
-  // Fallback: extract event cards from HTML using regex patterns
-  // Luma event cards typically have links like /event-slug and contain event info
-  const cardPattern =
-    /href="\/([a-z0-9][\w-]*)"[^>]*>[\s\S]*?<[^>]*class="[^"]*event[^"]*"[\s\S]*?<\/a>/gi;
-  const cards = html.matchAll(cardPattern);
-  for (const card of cards) {
-    const slug = card[1];
-    const cardHtml = card[0];
-
-    // Extract title — usually in a prominent element
-    const titleMatch = cardHtml.match(
-      /<(?:h[1-6]|div|span|p)[^>]*class="[^"]*(?:title|name|heading)[^"]*"[^>]*>([\s\S]*?)<\//
-    );
-    const title = titleMatch
-      ? titleMatch[1].replace(/<[^>]*>/g, "").trim()
-      : "";
-    if (!title) continue;
-
-    // Extract date
-    const dateMatch = cardHtml.match(
-      /(?:datetime|data-date)="([^"]+)"/
-    );
-    const dateStr = dateMatch ? dateMatch[1] : "";
-
-    const description = "";
-    if (!isRelevantEvent(title, description)) continue;
-
-    events.push({
-      id: `luma-${slug}`,
-      title,
-      description,
-      date: dateStr,
-      location: "London",
-      url: `https://lu.ma/${slug}`,
-      source: "luma",
-      category: categorizeEvent(title, description),
-    });
-  }
-
-  // Also try extracting from embedded application state / Apollo cache / props
-  const statePattern =
-    /"name"\s*:\s*"([^"]+)"[\s\S]*?"start_at"\s*:\s*"([^"]+)"/g;
-  const stateMatches = html.matchAll(statePattern);
-  for (const m of stateMatches) {
-    const title = m[1];
-    const date = m[2];
-    if (!isRelevantEvent(title, "")) continue;
-
-    const id = title.toLowerCase().replace(/\s+/g, "-");
-    if (events.some((e) => e.id === `luma-${id}`)) continue;
-
-    events.push({
-      id: `luma-${id}`,
-      title,
-      description: "",
-      date,
-      location: "London",
-      url: `https://lu.ma/discover/london`,
-      source: "luma",
-      category: categorizeEvent(title, ""),
-    });
-  }
-
-  return events;
-}
-
-/** De-duplicate events by id */
-function dedup(events: FounderEvent[]): FounderEvent[] {
+function dedup(events: LumaFounderEvent[]): LumaFounderEvent[] {
   const seen = new Set<string>();
   return events.filter((e) => {
     if (seen.has(e.id)) return false;
@@ -443,77 +475,52 @@ function dedup(events: FounderEvent[]): FounderEvent[] {
 // ---------------------------------------------------------------------------
 export async function GET() {
   try {
-    // Run all strategies concurrently; use whatever succeeds
-    const [discoverResults, searchResults, scrapeResults, nextDataResults] =
-      await Promise.allSettled([
-        fetchFromDiscoverAPI(),
-        fetchFromSearchAPI(),
-        scrapeDiscoverPage(),
-        scrapeNextData(),
-      ]);
+    const now = new Date();
+    const cutoff = new Date(now);
+    cutoff.setFullYear(cutoff.getFullYear() + 1);
 
-    const all: FounderEvent[] = [];
-
-    if (discoverResults.status === "fulfilled")
-      all.push(...discoverResults.value);
-    if (searchResults.status === "fulfilled")
-      all.push(...searchResults.value);
-    if (scrapeResults.status === "fulfilled")
-      all.push(...scrapeResults.value);
-    if (nextDataResults.status === "fulfilled")
-      all.push(...nextDataResults.value);
-
-    const events = dedup(all);
-
-    // Fetch descriptions for events that don't have them (up to 20)
-    const needsDescription = events.filter((e) => !e.description).slice(0, 20);
-    if (needsDescription.length > 0) {
-      const detailResults = await Promise.allSettled(
-        needsDescription.map(async (e) => {
-          try {
-            const slug = e.url.replace("https://lu.ma/", "");
-            const res = await fetch(`https://lu.ma/${slug}`, {
-              headers: {
-                "User-Agent":
-                  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-              },
-              signal: AbortSignal.timeout(5_000),
-            });
-            if (!res.ok) return;
-            const html = await res.text();
-
-            // Extract description from meta tags
-            const descMatch = html.match(
-              /<meta[^>]*(?:name="description"|property="og:description")[^>]*content="([^"]*)"[^>]*>/i
-            );
-            if (descMatch) {
-              e.description = descMatch[1].slice(0, 500);
-            }
-
-            // Also extract full address if we only have "London"
-            if (e.location === "London") {
-              const locMatch = html.match(
-                /<meta[^>]*property="og:location"[^>]*content="([^"]*)"[^>]*>/i
-              );
-              if (locMatch) e.location = locMatch[1];
-            }
-          } catch {
-            // skip
-          }
-        })
-      );
-      // results applied in-place via mutation
+    const cityEvents: LumaFounderEvent[] = [];
+    for (let i = 0; i < CITY_SLUGS.length; i += 5) {
+      const batch = CITY_SLUGS.slice(i, i + 5);
+      const results = await Promise.allSettled(batch.map(fetchCity));
+      for (const r of results) {
+        if (r.status === "fulfilled") cityEvents.push(...r.value);
+      }
     }
 
-    // Sort by date ascending
-    events.sort(
-      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
-    );
+    const communityEvents: LumaFounderEvent[] = [];
+    for (let i = 0; i < COMMUNITY_SLUGS.length; i += 6) {
+      const batch = COMMUNITY_SLUGS.slice(i, i + 6);
+      const results = await Promise.allSettled(batch.map(fetchCommunity));
+      for (const r of results) {
+        if (r.status === "fulfilled") communityEvents.push(...r.value);
+      }
+    }
+
+    const officialEvents = await fetchFromOfficialAPI();
+
+    const all = [...cityEvents, ...communityEvents, ...officialEvents];
+
+    const filtered = dedup(all).filter((e) => {
+      if (!e.title || !e.date) return false;
+      const d = new Date(e.date);
+      return d >= now && d <= cutoff;
+    });
+
+    filtered.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
     return NextResponse.json({
-      events,
-      count: events.length,
+      events: filtered,
+      count: filtered.length,
       source: "luma",
+      cities: CITY_SLUGS.length,
+      communities: COMMUNITY_SLUGS.length,
+      breakdown: {
+        city: cityEvents.length,
+        community: communityEvents.length,
+        official: officialEvents.length,
+        deduped: all.length - filtered.length,
+      },
     });
   } catch (error) {
     console.error("Luma route error:", error);

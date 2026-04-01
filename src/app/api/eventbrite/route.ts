@@ -1,34 +1,71 @@
 import { NextResponse } from "next/server";
 import { FounderEvent, categorizeEvent } from "@/lib/types";
 
+// ---------------------------------------------------------------------------
+// Search queries × multiple cities × multiple pages = broad coverage
+// ---------------------------------------------------------------------------
 const SEARCH_QUERIES = [
   "hackathon",
   "startup",
   "founder",
   "demo day",
   "pitch night",
-  "networking tech",
-  "investor",
+  "investor meetup",
   "accelerator",
   "entrepreneur",
   "AI meetup",
   "fintech",
-  "SaaS",
   "venture capital",
-  "seed funding",
-  "startup launch",
   "tech networking",
+  "startup launch",
+  "SaaS founders",
+  "tech conference",
+  "startup conference",
+  "tech summit",
+  "innovation",
+  "founder dinner",
+  "founder breakfast",
+  "workshop tech",
+  "blockchain",
+  "deep tech",
 ];
 
-// Eventbrite has a search API that returns JSON when you hit their internal endpoint
-async function searchEventbrite(query: string): Promise<FounderEvent[]> {
+const CITIES = [
+  { slug: "united-kingdom--london",   label: "London" },
+  { slug: "germany--berlin",          label: "Berlin" },
+  { slug: "france--paris",            label: "Paris" },
+  { slug: "netherlands--amsterdam",   label: "Amsterdam" },
+  { slug: "united-states--san-francisco", label: "San Francisco" },
+  { slug: "estonia--tallinn",         label: "Tallinn" },
+  { slug: "sweden--stockholm",        label: "Stockholm" },
+  { slug: "finland--helsinki",         label: "Helsinki" },
+  { slug: "ireland--dublin",          label: "Dublin" },
+  { slug: "portugal--lisbon",         label: "Lisbon" },
+  { slug: "spain--barcelona",         label: "Barcelona" },
+  { slug: "switzerland--zurich",      label: "Zurich" },
+  { slug: "austria--vienna",          label: "Vienna" },
+  { slug: "norway--oslo",             label: "Oslo" },
+  { slug: "latvia--riga",             label: "Riga" },
+];
+
+// Pages to fetch per query — gets us events further into the future
+const PAGES_PER_QUERY = [1, 2, 3, 4, 5];
+
+// ---------------------------------------------------------------------------
+// Fetch one page of Eventbrite search results
+// ---------------------------------------------------------------------------
+async function fetchEventbritePage(
+  citySlug: string,
+  cityLabel: string,
+  query: string,
+  page: number
+): Promise<FounderEvent[]> {
   const events: FounderEvent[] = [];
 
   try {
-    // Use Eventbrite's search page API which returns embedded JSON data
-    const searchUrl = `https://www.eventbrite.co.uk/d/united-kingdom--london/${encodeURIComponent(query)}/?page=1&lang=en-gb`;
+    const url = `https://www.eventbrite.co.uk/d/${citySlug}/${encodeURIComponent(query)}/?page=${page}&lang=en-gb`;
 
-    const res = await fetch(searchUrl, {
+    const res = await fetch(url, {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -41,23 +78,22 @@ async function searchEventbrite(query: string): Promise<FounderEvent[]> {
     if (!res.ok) return events;
     const html = await res.text();
 
-    // Strategy 1: Extract from window.__SERVER_DATA__ or similar embedded JSON
-    const serverDataMatch = html.match(
-      /window\.__SERVER_DATA__\s*=\s*({[\s\S]*?});?\s*<\/script>/
-    );
+    // Stop paginating if Eventbrite returns a "no results" or redirect page
+    if (html.includes("no-results") || html.includes("No Results Found")) return events;
+
+    // Strategy 1: window.__SERVER_DATA__
+    const serverDataMatch = html.match(/window\.__SERVER_DATA__\s*=\s*({[\s\S]*?});?\s*<\/script>/);
     if (serverDataMatch) {
       try {
         const serverData = JSON.parse(serverDataMatch[1]);
-        const searchEvents =
+        const results =
           serverData?.search_data?.events?.results ||
           serverData?.jsonld?.events ||
           [];
-        for (const evt of searchEvents) {
-          events.push(mapEventbriteEvent(evt));
+        for (const evt of results) {
+          events.push(mapEventbriteEvent(evt, cityLabel));
         }
-      } catch {
-        // parse failed
-      }
+      } catch { /* parse failed */ }
     }
 
     // Strategy 2: JSON-LD structured data
@@ -83,7 +119,7 @@ async function searchEventbrite(query: string): Promise<FounderEvent[]> {
                     evt.location?.name ||
                     evt.location?.address?.streetAddress ||
                     evt.location?.address?.addressLocality ||
-                    "London",
+                    cityLabel,
                   url: evt.url || "",
                   source: "eventbrite",
                   category: categorizeEvent(evt.name || "", evt.description || ""),
@@ -93,37 +129,34 @@ async function searchEventbrite(query: string): Promise<FounderEvent[]> {
             }
           }
           if (item["@type"] === "Event" || item["@type"] === "SocialEvent") {
-            const e = item;
             events.push({
-              id: `eb-${hashString(e.url || e.name || "")}`,
-              title: e.name || "",
-              description: (e.description || "").slice(0, 500),
-              date: e.startDate || "",
-              endDate: e.endDate || undefined,
+              id: `eb-${hashString(item.url || item.name || "")}`,
+              title: item.name || "",
+              description: (item.description || "").slice(0, 500),
+              date: item.startDate || "",
+              endDate: item.endDate || undefined,
               location:
-                e.location?.name ||
-                e.location?.address?.addressLocality ||
-                "London",
-              url: e.url || "",
+                item.location?.name ||
+                item.location?.address?.addressLocality ||
+                cityLabel,
+              url: item.url || "",
               source: "eventbrite",
-              category: categorizeEvent(e.name || "", e.description || ""),
-              imageUrl: typeof e.image === "string" ? e.image : e.image?.url || undefined,
+              category: categorizeEvent(item.name || "", item.description || ""),
+              imageUrl: typeof item.image === "string" ? item.image : item.image?.url || undefined,
             });
           }
         }
-      } catch {
-        // skip
-      }
+      } catch { /* skip */ }
     }
 
-    // Strategy 3: Extract event URLs and titles from links
-    const linkPattern = /href="(https:\/\/www\.eventbrite\.co\.uk\/e\/([^"?]+)[^"]*)"/gi;
+    // Strategy 3: event URLs from links (fallback, title-only)
     const seenUrls = new Set(events.map((e) => e.url));
+    const linkPattern = /href="(https:\/\/www\.eventbrite\.co\.uk\/e\/([^"?]+)[^"]*)"/gi;
     let linkMatch;
     while ((linkMatch = linkPattern.exec(html)) !== null) {
-      const url = linkMatch[1];
-      if (seenUrls.has(url)) continue;
-      seenUrls.add(url);
+      const evtUrl = linkMatch[1];
+      if (seenUrls.has(evtUrl)) continue;
+      seenUrls.add(evtUrl);
 
       const slug = linkMatch[2] || "";
       const title = slug
@@ -135,33 +168,33 @@ async function searchEventbrite(query: string): Promise<FounderEvent[]> {
       if (!title || title.length < 5) continue;
 
       events.push({
-        id: `eb-${hashString(url)}`,
+        id: `eb-${hashString(evtUrl)}`,
         title,
         description: "",
         date: "",
-        location: "London",
-        url,
+        location: cityLabel,
+        url: evtUrl,
         source: "eventbrite",
         category: categorizeEvent(title, query),
       });
     }
-  } catch {
-    // query failed
-  }
+  } catch { /* query failed */ }
 
   return events;
 }
 
-function mapEventbriteEvent(evt: Record<string, unknown>): FounderEvent {
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function mapEventbriteEvent(evt: Record<string, unknown>, cityLabel: string): FounderEvent {
   const title = (evt.name as string) || (evt.title as string) || "";
   const description = (evt.description as string) || (evt.summary as string) || "";
   const url = (evt.url as string) || "";
   const startDate = (evt.start_date as string) || (evt.start as string) || "";
   const venue = evt.venue as Record<string, unknown> | undefined;
   const location = venue
-    ? (venue.name as string) || (venue.address as string) || "London"
-    : "London";
-  const image = (evt.image_url as string) || (evt.logo_url as string) || "";
+    ? (venue.name as string) || (venue.address as string) || cityLabel
+    : cityLabel;
 
   return {
     id: `eb-${hashString(url || title)}`,
@@ -173,7 +206,7 @@ function mapEventbriteEvent(evt: Record<string, unknown>): FounderEvent {
     url,
     source: "eventbrite",
     category: categorizeEvent(title, description),
-    imageUrl: image || undefined,
+    imageUrl: (evt.image_url as string) || (evt.logo_url as string) || undefined,
   };
 }
 
@@ -197,19 +230,33 @@ function dedup(events: FounderEvent[]): FounderEvent[] {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Route handler
+// ---------------------------------------------------------------------------
 export async function GET() {
   try {
-    // Run all searches in parallel
-    const results = await Promise.allSettled(
-      SEARCH_QUERIES.map((q) => searchEventbrite(q))
-    );
-
     const allEvents: FounderEvent[] = [];
-    for (const r of results) {
-      if (r.status === "fulfilled") allEvents.push(...r.value);
+
+    // For each city, run all queries across all pages in parallel batches
+    // Batch size of 8 to avoid hammering Eventbrite
+    for (const city of CITIES) {
+      const tasks: Array<Promise<FounderEvent[]>> = [];
+      for (const query of SEARCH_QUERIES) {
+        for (const page of PAGES_PER_QUERY) {
+          tasks.push(fetchEventbritePage(city.slug, city.label, query, page));
+        }
+      }
+
+      // Run in batches of 8 concurrent requests
+      for (let i = 0; i < tasks.length; i += 8) {
+        const batch = tasks.slice(i, i + 8);
+        const results = await Promise.allSettled(batch);
+        for (const r of results) {
+          if (r.status === "fulfilled") allEvents.push(...r.value);
+        }
+      }
     }
 
-    // Don't filter by isRelevantEvent — the search queries already target relevant events
     const unique = dedup(allEvents).filter((e) => e.title.length > 3);
 
     unique.sort((a, b) => {
@@ -223,6 +270,8 @@ export async function GET() {
       events: unique,
       count: unique.length,
       source: "eventbrite",
+      cities: CITIES.length,
+      pages_per_query: PAGES_PER_QUERY.length,
     });
   } catch (error) {
     console.error("Eventbrite error:", error);
