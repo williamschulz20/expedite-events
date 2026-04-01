@@ -139,6 +139,15 @@ const KNOWN_CITIES = [
   "Tallinn", "Riga", "Vilnius", "Oslo",
 ];
 
+// Fallback team when Supabase team_members table is empty/unavailable
+const DEFAULT_TEAM: TeamMember[] = [
+  { id: "w", name: "William", email: "", initials: "W", avatar_color: "#6366f1", calendar_setup_done: false },
+  { id: "l", name: "Lina", email: "", initials: "L", avatar_color: "#ec4899", calendar_setup_done: false },
+  { id: "q", name: "Quinn", email: "", initials: "Q", avatar_color: "#f59e0b", calendar_setup_done: false },
+  { id: "l2", name: "Leo", email: "", initials: "L", avatar_color: "#10b981", calendar_setup_done: false },
+  { id: "t", name: "Tom", email: "", initials: "T", avatar_color: "#3b82f6", calendar_setup_done: false },
+];
+
 function extractCity(location: string): string {
   if (!location) return "Other";
   const loc = location.toLowerCase();
@@ -1909,8 +1918,8 @@ export default function Home() {
     <div className="min-h-screen bg-[#fafafa] font-sans antialiased">
 
       {/* Modals */}
-      {showIdentityModal && teamMembers.length > 0 && (
-        <IdentityModal teamMembers={teamMembers} onSelect={handleIdentitySelect} />
+      {showIdentityModal && (
+        <IdentityModal teamMembers={teamMembers.length > 0 ? teamMembers : DEFAULT_TEAM} onSelect={handleIdentitySelect} />
       )}
       {showCalendarSetup && !showIdentityModal && (
         <CalendarSetupModal onDone={handleCalendarSetupDone} />
