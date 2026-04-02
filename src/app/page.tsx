@@ -1692,6 +1692,7 @@ export default function Home() {
   const [city,        setCity]        = useState("All");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortByLead,  setSortByLead]  = useState(false);
+  const [pricingFilter, setPricingFilter] = useState<"All" | "free" | "paid">("All");
   const [view,        setView]        = useState<"list" | "calendar" | "people" | "organizers">("calendar");
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [rsvpLoading,  setRsvpLoading]  = useState(false);
@@ -1927,9 +1928,10 @@ export default function Home() {
         || ev.description.toLowerCase().includes(q)
         || ev.location.toLowerCase().includes(q)
         || (ev.organizerName ?? "").toLowerCase().includes(q);
-      return tierOk && catOk && srcOk && cityOk && searchOk;
+      const priceOk = pricingFilter === "All" || detectPricing(ev.title, ev.description) === pricingFilter;
+      return tierOk && catOk && srcOk && cityOk && searchOk && priceOk;
     });
-  }, [events, activeTab, tierFilter, source, city, searchQuery]);
+  }, [events, activeTab, tierFilter, source, city, searchQuery, pricingFilter]);
 
   const sortedEvents = useMemo(() => {
     const arr = [...filteredEvents];
@@ -2253,7 +2255,35 @@ export default function Home() {
               })}
             </div>
 
-            {/* Row 3: City filter */}
+            {/* Row: Pricing filter */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mr-1 shrink-0">Price</span>
+              {([["All", "All"], ["free", "Free"], ["paid", "Paid"]] as const).map(([id, label]) => {
+                const isActive = pricingFilter === id;
+                return (
+                  <button
+                    key={id}
+                    onClick={() => setPricingFilter(id as "All" | "free" | "paid")}
+                    className={`whitespace-nowrap rounded-full border px-3 py-1 text-[11px] font-semibold transition ${
+                      isActive
+                        ? id === "All"  ? "border-gray-900 bg-gray-900 text-white"
+                          : id === "free" ? "border-emerald-500 bg-emerald-500 text-white"
+                          : "border-red-500 bg-red-500 text-white"
+                        : "border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-gray-700"
+                    }`}
+                  >
+                    {label}
+                    {id !== "All" && (
+                      <span className="ml-1.5 tabular-nums opacity-75">
+                        {events.filter(e => detectPricing(e.title, e.description) === id).length}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Row: City filter */}
             {availableCities.length > 0 && (
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mr-1 shrink-0">City</span>
