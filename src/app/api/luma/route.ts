@@ -104,6 +104,37 @@ const COMMUNITY_SLUGS = [
   "angels-london",
   "founderscafe",          // Founders Cafe
   "indie-hackers",         // Indie Hackers
+  // More founder communities & events
+  "superconnectors",       // Superconnectors Rotterdam/Amsterdam
+  "founders-dinners",      // FounderDinners community
+  "london-loop",           // London Loop events
+  "uk-startup-hub",        // UK Startup Hub
+  "founders-meetup-london", // Founders Meetup London
+  "londonstartup",         // LondonStartup
+  "startup-london",        // Startup London
+  "founder-dinners",       // Founder Dinners
+  "founder-breakfasts",    // Founder Breakfasts
+  "cto-craft",             // CTO Craft London
+  "founderland",           // Founderland
+  "unicorn-mafia",         // Unicorn Mafia
+  "tum-ai",                // TUM AI
+  "kth-ai",                // KTH AI
+  "ucl-ai",                // UCL AI
+  "oxford-ai",             // Oxford AI Society
+  "imperial-ai",           // Imperial AI
+  "ai-tinkerers",          // AI Tinkerers
+  "ai-tinkerers-london",   // AI Tinkerers London
+  "kickstart-innovation",  // Kickstart Innovation (Switzerland)
+  "hackiterate",           // Hackiterate hackathons
+  "saastock",              // SaaStock
+  "techbbq",               // TechBBQ Copenhagen
+  "how-to-web",            // How to Web Bucharest
+  "web3-founders",         // Web3 founders
+  "defi-founders",         // DeFi founders
+  "climate-founders",      // Climate tech founders
+  "health-founders",       // Health tech founders
+  "fintech-founders",      // Fintech founders
+  "proptech-founders",     // Proptech founders
 ];
 
 // ---------------------------------------------------------------------------
@@ -547,22 +578,26 @@ export async function GET() {
     const cutoff = new Date(now);
     cutoff.setFullYear(cutoff.getFullYear() + 1);
 
+    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
     const cityEvents: LumaFounderEvent[] = [];
-    for (let i = 0; i < CITY_SLUGS.length; i += 5) {
-      const batch = CITY_SLUGS.slice(i, i + 5);
+    for (let i = 0; i < CITY_SLUGS.length; i += 3) {
+      const batch = CITY_SLUGS.slice(i, i + 3);
       const results = await Promise.allSettled(batch.map(fetchCity));
       for (const r of results) {
         if (r.status === "fulfilled") cityEvents.push(...r.value);
       }
+      if (i + 3 < CITY_SLUGS.length) await delay(800 + Math.random() * 700);
     }
 
     const communityEvents: LumaFounderEvent[] = [];
-    for (let i = 0; i < COMMUNITY_SLUGS.length; i += 6) {
-      const batch = COMMUNITY_SLUGS.slice(i, i + 6);
+    for (let i = 0; i < COMMUNITY_SLUGS.length; i += 4) {
+      const batch = COMMUNITY_SLUGS.slice(i, i + 4);
       const results = await Promise.allSettled(batch.map(fetchCommunity));
       for (const r of results) {
         if (r.status === "fulfilled") communityEvents.push(...r.value);
       }
+      if (i + 4 < COMMUNITY_SLUGS.length) await delay(600 + Math.random() * 600);
     }
 
     const officialEvents = await fetchFromOfficialAPI();
