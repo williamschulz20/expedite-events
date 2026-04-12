@@ -58,7 +58,7 @@ function toISODate(d: Date): string {
 }
 
 function extractCityFromLocation(location: string): string {
-  if (\!location) return "Unknown";
+  if (!location) return "Unknown";
   const loc = location.toLowerCase();
   const cities = [
     "London",
