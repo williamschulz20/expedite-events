@@ -92,34 +92,35 @@ export async function GET(request: Request) {
     } catch {}
   }
 
-  // STEP 2: Try local master cache (instant, no network)
+  // STEP 2: Try local master cache (instant, no network — local dev only)
   if (!refresh) {
-    const masterCached = loadMasterCache();
-    if (masterCached.length > 0) {
-      // Kick off background refresh for non-API sources only
-      refreshNonApiSources(baseUrl).catch(() => {});
-      return NextResponse.json({ events: masterCached, total: masterCached.length, source: "file-cache" });
-    }
+    try {
+      const masterCached = loadMasterCache();
+      if (masterCached.length > 0) {
+        refreshNonApiSources(baseUrl).catch(() => {});
+        return NextResponse.json({ events: masterCached, total: masterCached.length, source: "file-cache" });
+      }
+    } catch {}
   }
 
-  // STEP 3: Build from file caches (luma, eventbrite, partiful) + live non-API sources
+  // STEP 3: Build from file caches + live non-API sources
   const allEvents: FounderEvent[] = [];
 
-  // Read file caches for Luma, Eventbrite, Partiful (no API calls)
-  allEvents.push(...loadFileCache("luma"));
-  allEvents.push(...loadFileCache("eventbrite"));
-  allEvents.push(...loadFileCache("partiful"));
+  // Read file caches (local dev only — fails silently on Vercel)
+  try { allEvents.push(...loadFileCache("luma")); } catch {}
+  try { allEvents.push(...loadFileCache("eventbrite")); } catch {}
+  try { allEvents.push(...loadFileCache("partiful")); } catch {}
 
   // Scrape non-API sources (conferences, devevents, etc.)
+  // Use short timeouts on Vercel (8s max to stay within 10s function limit)
   const nonApiSources = [
-    "conferences", "websearch", "googlesearch", "confstech",
-    "f6s", "selectusa", "university", "devevents",
+    "conferences", "confstech", "devevents",
     "garysguide", "tentimes", "startupgrind",
   ];
 
   const results = await Promise.allSettled(
     nonApiSources.map((s) =>
-      fetch(`${baseUrl}/api/${s}`, { signal: AbortSignal.timeout(55_000) })
+      fetch(`${baseUrl}/api/${s}`, { signal: AbortSignal.timeout(8_000) })
         .then((r) => r.json())
         .catch(() => ({ events: [] }))
     )
@@ -134,8 +135,8 @@ export async function GET(request: Request) {
   // Score, dedup, filter
   const processed = processEvents(allEvents);
 
-  // Save to master cache for instant future loads
-  saveMasterCache(processed);
+  // Save to master cache for instant future loads (skip on read-only filesystems like Vercel)
+  try { saveMasterCache(processed); } catch {}
 
   // Upsert to Supabase in background
   upsertToSupabase(processed).catch(() => {});
