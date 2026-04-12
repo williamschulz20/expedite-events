@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head><title>Luma Scraper</title></head>
+<body>
+<h2>Luma City Scraper</h2>
+<div id="status">Ready. Click Start.</div>
+<button id="start" onclick="startScrape()">Start Scraping</button>
+<pre id="log" style="max-height:400px;overflow:auto;background:#f0f0f0;padding:10px;font-size:12px;"></pre>
+<script>
+const CITIES = [
+  "london","berlin","paris","amsterdam","munich","barcelona","lisbon",
+  "stockholm","helsinki","dublin","zurich","copenhagen","vienna","madrid",
+  "warsaw","brussels","geneva","hamburg","milan","rome","budapest","prague",
+  "new-york","los-angeles","austin","boston","tallinn","oslo"
+];
+
+let allEvents = [];
+let logEl, statusEl;
+
+function log(msg) {
+  logEl = logEl || document.getElementById('log');
+  logEl.textContent += msg + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setStatus(msg) {
+  statusEl = statusEl || document.getElementById('status');
+  statusEl.textContent = msg;
+}
+
+async function scrapeCityViaFetch(slug) {
+  try {
+    const res = await fetch(`https://lu.ma/${slug}?k=p`);
+    if (!res.ok) return [];
+    const html = await res.text();
+    const m = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+    if (!m) return [];
+    const nd = JSON.parse(m[1]);
+    const d = nd.props?.pageProps?.initialData?.data;
+    if (!d) return [];
+    const city = d.page?.place?.name || slug;
+    const evts = [...(d.events||[]), ...(d.featured_events||[])];
+    return evts.map(e => {
+      const ev = e.event || e;
+      return { id: ev.api_id, t: ev.name, d: ev.start_at, ed: ev.end_at, u: ev.url||ev.api_id, c: city, ds: (ev.description_short||'').slice(0,300) };
+    }).filter(e => e.id);
+  } catch(err) {
+    return [];
+  }
+}
+
+async function startScrape() {
+  document.getElementById('start').disabled = true;
+  allEvents = [];
+  const seen = new Set();
+
+  for (let i = 0; i < CITIES.length; i++) {
+    const slug = CITIES[i];
+    setStatus(`Scraping ${slug} (${i+1}/${CITIES.length})...`);
+    log(`[${i+1}/${CITIES.length}] Scraping ${slug}...`);
+
+    const events = await scrapeCityViaFetch(slug);
+    let added = 0;
+    for (const e of events) {
+      if (!seen.has(e.id)) { seen.add(e.id); allEvents.push(e); added++; }
+    }
+    log(`  -> ${added} new events (total: ${allEvents.length})`);
+
+    // Delay between requests
+    if (i < CITIES.length - 1) await new Promise(r => setTimeout(r, 1500));
+  }
+
+  // POST to our import API
+  setStatus(`Saving ${allEvents.length} events to API...`);
+  log(`\nSaving ${allEvents.length} events...`);
+  try {
+    const res = await fetch('/api/luma-import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: allEvents })
+    });
+    const result = await res.json();
+    log(`API response: ${JSON.stringify(result)}`);
+    setStatus(`Done! ${result.total} total Luma events saved.`);
+  } catch(err) {
+    log(`Error saving: ${err.message}`);
+    setStatus('Error saving events.');
+  }
+}
+</script>
+</body>
+</html>
