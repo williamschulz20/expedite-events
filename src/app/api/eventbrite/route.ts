@@ -35,22 +35,26 @@ const SEARCH_QUERIES = [
 ];
 
 const CITIES = [
-  { slug: "united-kingdom--london",   label: "London" },
-  { slug: "germany--berlin",          label: "Berlin" },
-  { slug: "france--paris",            label: "Paris" },
-  { slug: "netherlands--amsterdam",   label: "Amsterdam" },
-  { slug: "united-states--san-francisco", label: "San Francisco" },
-  { slug: "estonia--tallinn",         label: "Tallinn" },
-  { slug: "sweden--stockholm",        label: "Stockholm" },
-  { slug: "finland--helsinki",         label: "Helsinki" },
-  { slug: "ireland--dublin",          label: "Dublin" },
-  { slug: "portugal--lisbon",         label: "Lisbon" },
-  { slug: "spain--barcelona",         label: "Barcelona" },
-  { slug: "switzerland--zurich",      label: "Zurich" },
-  { slug: "austria--vienna",          label: "Vienna" },
-  { slug: "norway--oslo",             label: "Oslo" },
-  { slug: "latvia--riga",             label: "Riga" },
-  { slug: "united-states--los-angeles", label: "Los Angeles" },
+  { slug: "united-kingdom--london",   label: "London", domain: "eventbrite.co.uk" },
+  { slug: "germany--berlin",          label: "Berlin", domain: "eventbrite.de" },
+  { slug: "france--paris",            label: "Paris", domain: "eventbrite.fr" },
+  { slug: "netherlands--amsterdam",   label: "Amsterdam", domain: "eventbrite.nl" },
+  { slug: "united-states--san-francisco", label: "San Francisco", domain: "eventbrite.com" },
+  { slug: "estonia--tallinn",         label: "Tallinn", domain: "eventbrite.com" },
+  { slug: "sweden--stockholm",        label: "Stockholm", domain: "eventbrite.com" },
+  { slug: "finland--helsinki",        label: "Helsinki", domain: "eventbrite.com" },
+  { slug: "ireland--dublin",          label: "Dublin", domain: "eventbrite.ie" },
+  { slug: "portugal--lisbon",         label: "Lisbon", domain: "eventbrite.pt" },
+  { slug: "spain--barcelona",         label: "Barcelona", domain: "eventbrite.es" },
+  { slug: "switzerland--zurich",      label: "Zurich", domain: "eventbrite.com" },
+  { slug: "austria--vienna",          label: "Vienna", domain: "eventbrite.at" },
+  { slug: "norway--oslo",             label: "Oslo", domain: "eventbrite.com" },
+  { slug: "latvia--riga",             label: "Riga", domain: "eventbrite.com" },
+  { slug: "united-states--los-angeles", label: "Los Angeles", domain: "eventbrite.com" },
+  { slug: "united-states--new-york",  label: "New York", domain: "eventbrite.com" },
+  { slug: "united-states--austin",    label: "Austin", domain: "eventbrite.com" },
+  { slug: "denmark--copenhagen",      label: "Copenhagen", domain: "eventbrite.com" },
+  { slug: "czech-republic--prague",   label: "Prague", domain: "eventbrite.com" },
 ];
 
 // Pages to fetch per query — gets us events further into the future
@@ -63,12 +67,13 @@ async function fetchEventbritePage(
   citySlug: string,
   cityLabel: string,
   query: string,
-  page: number
+  page: number,
+  domain: string = "eventbrite.co.uk"
 ): Promise<FounderEvent[]> {
   const events: FounderEvent[] = [];
 
   try {
-    const url = `https://www.eventbrite.co.uk/d/${citySlug}/${encodeURIComponent(query)}/?page=${page}&lang=en-gb`;
+    const url = `https://www.${domain}/d/${citySlug}/${encodeURIComponent(query)}/?page=${page}`;
 
     const res = await fetch(url, {
       headers: {
@@ -248,7 +253,7 @@ export async function GET() {
       const tasks: Array<Promise<FounderEvent[]>> = [];
       for (const query of SEARCH_QUERIES) {
         for (const page of PAGES_PER_QUERY) {
-          tasks.push(fetchEventbritePage(city.slug, city.label, query, page));
+          tasks.push(fetchEventbritePage(city.slug, city.label, query, page, city.domain));
         }
       }
 

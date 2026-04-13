@@ -1,251 +1,235 @@
 import { NextResponse } from "next/server";
-import { FounderEvent, isRelevantEvent, categorizeEvent } from "@/lib/types";
+import { FounderEvent, categorizeEvent } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
-// Meetup.com scraper — London startup / tech events
-// Uses the public Meetup GraphQL API (no auth required for public events)
+// Meetup.com scraper — multi-city, multi-keyword
+// Uses HTML scraping of search results + JSON-LD extraction
 // ---------------------------------------------------------------------------
 
-const MEETUP_GRAPHQL = "https://www.meetup.com/gql";
-
-const LONDON_TOPICS = [
-  "tech",
-  "startup",
-  "entrepreneur",
-  "founder",
-  "venture-capital",
-  "angel-investing",
-  "saas",
-  "artificial-intelligence",
-  "fintech",
-  "product-management",
-  "networking",
+const SEARCH_QUERIES = [
+  "startup founders",
+  "founder networking",
+  "tech startup",
+  "entrepreneur meetup",
+  "demo day",
+  "pitch night",
   "hackathon",
+  "venture capital",
+  "AI founders",
+  "SaaS founders",
+  "fintech meetup",
+  "founder dinner",
+  "CTO meetup",
 ];
 
-interface MeetupEvent {
-  id: string;
-  title: string;
-  description?: string;
-  dateTime?: string;
-  endTime?: string;
-  venue?: {
-    name?: string;
-    address?: string;
-    city?: string;
-    country?: string;
-  };
-  eventUrl?: string;
-  imageUrl?: string;
-  group?: { name?: string; urlname?: string };
-}
-
-function parseMeetupEvent(raw: MeetupEvent): FounderEvent | null {
-  const title = raw.title ?? "";
-  if (!title) return null;
-
-  const description = raw.description ?? "";
-  if (!isRelevantEvent(title, description)) return null;
-
-  const venue = raw.venue;
-  const location = venue?.name
-    ? `${venue.name}${venue.address ? ", " + venue.address : ""}${venue.city ? ", " + venue.city : ""}`
-    : venue?.city ?? "London";
-
-  const locLower = location.toLowerCase();
-  if (
-    location &&
-    !locLower.includes("london") &&
-    !locLower.includes("uk") &&
-    !locLower.includes("england") &&
-    !locLower.includes("united kingdom")
-  ) {
-    return null;
-  }
-
-  return {
-    id: `meetup-${raw.id}`,
-    title,
-    description: description.replace(/<[^>]*>/g, "").slice(0, 500),
-    date: raw.dateTime ?? new Date().toISOString(),
-    endDate: raw.endTime ?? undefined,
-    location: location || "London",
-    url: raw.eventUrl ?? `https://www.meetup.com`,
-    source: "meetup",
-    category: categorizeEvent(title, description),
-    imageUrl: raw.imageUrl ?? undefined,
-  };
-}
+const CITIES = [
+  "London", "Berlin", "Paris", "Amsterdam", "San Francisco",
+  "New York", "Munich", "Barcelona", "Stockholm", "Helsinki",
+  "Dublin", "Lisbon", "Copenhagen", "Tallinn", "Riga",
+  "Vienna", "Zurich", "Oslo", "Los Angeles", "Austin",
+];
 
 // ---------------------------------------------------------------------------
-// Strategy 1: Meetup GraphQL API (public, no auth)
+// Scrape Meetup search results page for event data
 // ---------------------------------------------------------------------------
-async function fetchViaGraphQL(topic: string): Promise<FounderEvent[]> {
-  const now = new Date().toISOString();
+async function searchMeetupCity(
+  query: string,
+  city: string
+): Promise<FounderEvent[]> {
+  const events: FounderEvent[] = [];
 
-  const query = `
-    query GetEvents($topic: String!, $lat: Float!, $lon: Float!, $radius: Float!) {
-      keywordSearch(
-        filter: {
-          query: $topic
-          lat: $lat
-          lon: $lon
-          radius: $radius
-          source: EVENTS
-          startDateRange: "${now}"
-        }
-        first: 50
-      ) {
-        edges {
-          node {
-            result {
-              ... on Event {
-                id
-                title
-                description
-                dateTime
-                endTime
-                eventUrl
-                imageUrl
-                venue {
-                  name
-                  address
-                  city
-                  country
-                }
-                group {
-                  name
-                  urlname
-                }
+  try {
+    const url = `https://www.meetup.com/find/?keywords=${encodeURIComponent(query)}&location=${encodeURIComponent(city)}&source=EVENTS&eventType=upcoming`;
+
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-GB,en;q=0.9",
+      },
+      signal: AbortSignal.timeout(12_000),
+    });
+
+    if (!res.ok) return events;
+    const html = await res.text();
+
+    // Strategy 1: JSON-LD structured data
+    const jsonLdBlocks = [...html.matchAll(
+      /<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+    )];
+
+    for (const match of jsonLdBlocks) {
+      try {
+        const ld = JSON.parse(match[1]);
+        const items = Array.isArray(ld) ? ld : [ld];
+        for (const item of items) {
+          if (item["@type"] === "Event" && item.name && item.startDate) {
+            const loc = typeof item.location === "string"
+              ? item.location
+              : item.location?.name || item.location?.address?.addressLocality || city;
+
+            events.push({
+              id: `meetup-${hashString(item.url || item.name)}`,
+              title: item.name,
+              description: ((item.description as string) || "").replace(/<[^>]*>/g, "").slice(0, 500),
+              date: item.startDate,
+              endDate: item.endDate || undefined,
+              location: loc,
+              url: item.url || "",
+              source: "meetup",
+              category: categorizeEvent(item.name, (item.description as string) || ""),
+              imageUrl: typeof item.image === "string" ? item.image : item.image?.url || undefined,
+            });
+          }
+          if (item["@type"] === "ItemList" && Array.isArray(item.itemListElement)) {
+            for (const li of item.itemListElement) {
+              const evt = li.item || li;
+              if ((evt["@type"] === "Event" || evt["@type"] === "SocialEvent") && evt.name) {
+                events.push({
+                  id: `meetup-${hashString(evt.url || evt.name)}`,
+                  title: evt.name,
+                  description: ((evt.description as string) || "").replace(/<[^>]*>/g, "").slice(0, 500),
+                  date: evt.startDate || "",
+                  endDate: evt.endDate || undefined,
+                  location: typeof evt.location === "string" ? evt.location : evt.location?.name || city,
+                  url: evt.url || "",
+                  source: "meetup",
+                  category: categorizeEvent(evt.name, (evt.description as string) || ""),
+                });
               }
             }
           }
         }
-      }
+      } catch { /* skip */ }
     }
-  `;
 
-  try {
-    const res = await fetch(MEETUP_GRAPHQL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Referer: "https://www.meetup.com/",
-        Origin: "https://www.meetup.com",
-      },
-      body: JSON.stringify({
-        query,
-        variables: {
-          topic,
-          lat: 51.5074,
-          lon: -0.1278,
-          radius: 30,
-        },
-      }),
-      signal: AbortSignal.timeout(10_000),
-    });
+    // Strategy 2: Extract event links from the page HTML
+    const seenUrls = new Set(events.map(e => e.url));
+    const linkPattern = /href="(https:\/\/www\.meetup\.com\/[^"]*\/events\/[^"?]+)/gi;
 
-    if (!res.ok) return [];
+    let linkMatch;
+    while ((linkMatch = linkPattern.exec(html)) !== null) {
+      const evtUrl = linkMatch[1];
+      if (seenUrls.has(evtUrl)) continue;
+      seenUrls.add(evtUrl);
 
-    const data = await res.json() as {
-      data?: {
-        keywordSearch?: {
-          edges?: Array<{ node?: { result?: MeetupEvent } }>;
-        };
-      };
-    };
+      const urlParts = evtUrl.match(/meetup\.com\/([^/]+)\/events\/(\d+)/);
+      if (!urlParts) continue;
 
-    const edges = data?.data?.keywordSearch?.edges ?? [];
+      const groupSlug = urlParts[1];
+      const title = groupSlug
+        .replace(/-/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase());
 
-    return edges
-      .map((edge) => edge?.node?.result)
-      .filter((r): r is MeetupEvent => !!r && !!r.id)
-      .map(parseMeetupEvent)
-      .filter((e): e is FounderEvent => e !== null);
-  } catch {
-    return [];
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Strategy 2: Meetup REST API (legacy, no auth for public events)
-// ---------------------------------------------------------------------------
-async function fetchViaREST(): Promise<FounderEvent[]> {
-  const events: FounderEvent[] = [];
-
-  try {
-    const url = new URL("https://api.meetup.com/find/events");
-    url.searchParams.set("lat", "51.5074");
-    url.searchParams.set("lon", "-0.1278");
-    url.searchParams.set("radius", "30");
-    url.searchParams.set("topic_category_id", "546"); // Tech category
-    url.searchParams.set("page", "100");
-    url.searchParams.set("order", "time");
-    url.searchParams.set("fields", "description,event_url,featured_photo");
-
-    const res = await fetch(url.toString(), {
-      headers: {
-        Accept: "application/json",
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-      },
-      signal: AbortSignal.timeout(10_000),
-    });
-
-    if (!res.ok) return [];
-
-    const data = await res.json() as MeetupEvent[];
-    if (!Array.isArray(data)) return [];
-
-    for (const raw of data) {
-      const evt = parseMeetupEvent(raw);
-      if (evt) events.push(evt);
+      events.push({
+        id: `meetup-${urlParts[2]}`,
+        title,
+        description: "",
+        date: "",
+        location: city,
+        url: evtUrl,
+        source: "meetup",
+        category: categorizeEvent(title, query),
+      });
     }
-  } catch {
-    // REST API may be deprecated/rate-limited — that's fine
-  }
+
+    // Strategy 3: Apollo state / __NEXT_DATA__
+    const nextDataMatch = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+    if (nextDataMatch) {
+      try {
+        const nd = JSON.parse(nextDataMatch[1]);
+        const results = nd?.props?.pageProps?.searchResults?.edges ||
+                       nd?.props?.pageProps?.results ||
+                       [];
+        for (const edge of results) {
+          const evt = edge?.node || edge;
+          if (evt?.title && evt?.dateTime) {
+            const id = `meetup-${evt.id || hashString(evt.title)}`;
+            if (events.some(e => e.id === id)) continue;
+            events.push({
+              id,
+              title: evt.title,
+              description: (evt.description || "").replace(/<[^>]*>/g, "").slice(0, 500),
+              date: evt.dateTime,
+              endDate: evt.endTime || undefined,
+              location: evt.venue?.name || city,
+              url: evt.eventUrl || `https://www.meetup.com/events/${evt.id}/`,
+              source: "meetup",
+              category: categorizeEvent(evt.title, evt.description || ""),
+              imageUrl: evt.imageUrl || undefined,
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* query failed */ }
 
   return events;
+}
+
+function hashString(s: string): string {
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) {
+    hash = ((hash << 5) - hash) + s.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
 }
 
 // ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
 export async function GET() {
-  // Run GraphQL queries for all topics concurrently
-  const results = await Promise.allSettled([
-    fetchViaREST(),
-    ...LONDON_TOPICS.slice(0, 6).map(fetchViaGraphQL), // First 6 topics
-  ]);
+  try {
+    const allEvents: FounderEvent[] = [];
 
-  // Run the remaining topics
-  const results2 = await Promise.allSettled(
-    LONDON_TOPICS.slice(6).map(fetchViaGraphQL)
-  );
+    // Top 4 queries per city — batched to avoid hammering
+    const topQueries = SEARCH_QUERIES.slice(0, 4);
 
-  const all: FounderEvent[] = [];
-  const seen = new Set<string>();
-
-  for (const result of [...results, ...results2]) {
-    if (result.status === "fulfilled") {
-      for (const evt of result.value) {
-        if (!seen.has(evt.id)) {
-          seen.add(evt.id);
-          all.push(evt);
-        }
+    for (const city of CITIES) {
+      const tasks = topQueries.map(q => searchMeetupCity(q, city));
+      const results = await Promise.allSettled(tasks);
+      for (const r of results) {
+        if (r.status === "fulfilled") allEvents.push(...r.value);
       }
     }
+
+    // Dedup
+    const seen = new Set<string>();
+    const unique = allEvents.filter(e => {
+      const key = e.url || e.id;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    // Filter: future events, next 12 months
+    const now = new Date();
+    const cutoff = new Date(now);
+    cutoff.setFullYear(cutoff.getFullYear() + 1);
+
+    const filtered = unique.filter(e => {
+      if (!e.date) return true;
+      const d = new Date(e.date);
+      if (isNaN(d.getTime())) return true;
+      return d >= now && d <= cutoff;
+    });
+
+    filtered.sort((a, b) => {
+      if (a.date && b.date) return a.date.localeCompare(b.date);
+      if (a.date) return -1;
+      if (b.date) return 1;
+      return 0;
+    });
+
+    return NextResponse.json({
+      events: filtered,
+      count: filtered.length,
+      source: "meetup",
+      cities: CITIES.length,
+    });
+  } catch (error) {
+    console.error("Meetup scraper error:", error);
+    return NextResponse.json({ events: [], count: 0, source: "meetup" });
   }
-
-  // Sort by date
-  all.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-  return NextResponse.json({
-    source: "meetup",
-    count: all.length,
-    events: all,
-  });
 }

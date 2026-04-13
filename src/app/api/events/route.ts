@@ -45,6 +45,7 @@ function remapSource(externalId: string, dbSource: string): string {
   if (externalId.startsWith("selectusa-")) return "selectusa";
   if (externalId.startsWith("uni-")) return "university";
   if (externalId.startsWith("partiful-")) return "partiful";
+  if (externalId.startsWith("meetup-")) return "meetup";
   const confIds = ["latitude59", "slush", "web-summit", "tnw", "noah", "viva", "collision", "techcrunch", "rise-conf", "wolves", "arctic15", "login-", "riga-comm", "oslo-innovation", "sifted", "london-tech-week", "bits-pretzels", "pirate-summit", "pioneers", "south-summit", "websummit", "startup-grind", "tech-open-air", "tallinn-digital"];
   if (confIds.some((c) => externalId.startsWith(c))) return "conference";
   return "luma";
@@ -89,7 +90,9 @@ export async function GET(request: Request) {
         const events = dedup(cached.map(rowToEvent));
         return NextResponse.json({ events, total: events.length, source: "supabase", deduped: cached.length - events.length });
       }
-    } catch {}
+    } catch (err) {
+      console.error("Supabase fetch error:", err);
+    }
   }
 
   // STEP 2: Try local master cache (instant, no network — local dev only)
@@ -110,12 +113,14 @@ export async function GET(request: Request) {
   try { allEvents.push(...loadFileCache("luma")); } catch {}
   try { allEvents.push(...loadFileCache("eventbrite")); } catch {}
   try { allEvents.push(...loadFileCache("partiful")); } catch {}
+  try { allEvents.push(...loadFileCache("meetup")); } catch {}
 
   // Scrape non-API sources (conferences, devevents, etc.)
   // Use short timeouts on Vercel (8s max to stay within 10s function limit)
   const nonApiSources = [
     "conferences", "confstech", "devevents",
     "garysguide", "tentimes", "startupgrind",
+    "meetup",
   ];
 
   const results = await Promise.allSettled(
@@ -219,6 +224,7 @@ function rowToEvent(row: Record<string, unknown>): FounderEvent {
 async function refreshNonApiSources(baseUrl: string) {
   const sources = [
     "conferences", "confstech", "devevents", "garysguide", "tentimes", "startupgrind",
+    "meetup",
   ];
   const results = await Promise.allSettled(
     sources.map((s) =>
