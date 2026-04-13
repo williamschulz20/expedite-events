@@ -222,15 +222,15 @@ function parseEntry(entry: LumaEntry, fallbackCity: string): LumaFounderEvent | 
     url = e.url;
   } else if (e.url && e.url.length > 3 && !e.url.startsWith("evt-")) {
     // Valid human-readable slug
-    url = `https://lu.ma/${e.url}`;
+    url = `https://luma.com/${e.url}`;
   } else if (e.api_id) {
     // API ID like evt-xxxxx — use /event/ path which Luma resolves
-    url = `https://lu.ma/event/${e.api_id}`;
+    url = `https://luma.com/event/${e.api_id}`;
   } else if (e.url) {
     // evt- prefixed url field — also use /event/ path
-    url = `https://lu.ma/event/${e.url}`;
+    url = `https://luma.com/event/${e.url}`;
   } else {
-    url = `https://lu.ma/discover`;
+    url = `https://luma.com/discover`;
   }
 
   // Extract primary host info
@@ -272,7 +272,7 @@ async function paginatePlaceApi(
 ): Promise<LumaFounderEvent[]> {
   const events: LumaFounderEvent[] = [];
   const cutoff = new Date();
-  cutoff.setFullYear(cutoff.getFullYear() + 1);
+  cutoff.setMonth(cutoff.getMonth() + 18);
 
   let cursor = initialCursor;
   let page = 0;
@@ -293,7 +293,7 @@ async function paginatePlaceApi(
           headers: {
             Accept: "application/json",
             "User-Agent": USER_AGENT,
-            "x-luma-web-url": `https://lu.ma/${fallbackCity}`,
+            "x-luma-web-url": `https://luma.com/${fallbackCity}`,
           },
           signal: AbortSignal.timeout(10_000),
         }
@@ -330,7 +330,7 @@ async function fetchCity(citySlug: string): Promise<LumaFounderEvent[]> {
   const allEvents: LumaFounderEvent[] = [];
 
   try {
-    const res = await fetch(`https://lu.ma/${citySlug}`, {
+    const res = await fetch(`https://luma.com/${citySlug}`, {
       headers: {
         Accept: "text/html,application/xhtml+xml",
         "User-Agent": USER_AGENT,
@@ -432,7 +432,7 @@ async function fetchCommunity(slug: string): Promise<LumaFounderEvent[]> {
   const allEvents: LumaFounderEvent[] = [];
 
   try {
-    const res = await fetch(`https://lu.ma/${slug}`, {
+    const res = await fetch(`https://luma.com/${slug}`, {
       headers: {
         Accept: "text/html,application/xhtml+xml",
         "User-Agent": USER_AGENT,
@@ -512,10 +512,10 @@ async function fetchFromOfficialAPI(): Promise<LumaFounderEvent[]> {
         if (rawSlug.startsWith("http")) {
           eventUrl = rawSlug;
         } else if (rawSlug && !rawSlug.startsWith("evt-")) {
-          eventUrl = `https://lu.ma/${rawSlug}`;
+          eventUrl = `https://luma.com/${rawSlug}`;
         } else {
           // evt- prefixed or raw api_id — use /event/ path
-          eventUrl = `https://lu.ma/event/${rawSlug || id}`;
+          eventUrl = `https://luma.com/event/${rawSlug || id}`;
         }
 
         events.push({
@@ -576,7 +576,7 @@ export async function GET() {
   try {
     const now = new Date();
     const cutoff = new Date(now);
-    cutoff.setFullYear(cutoff.getFullYear() + 1);
+    cutoff.setMonth(cutoff.getMonth() + 18);
 
     const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

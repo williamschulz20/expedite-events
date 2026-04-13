@@ -203,10 +203,10 @@ export async function GET() {
       return true;
     });
 
-    // Filter: future events, next 12 months
+    // Filter: future events, next 18 months
     const now = new Date();
     const cutoff = new Date(now);
-    cutoff.setFullYear(cutoff.getFullYear() + 1);
+    cutoff.setMonth(cutoff.getMonth() + 18);
 
     const filtered = unique.filter(e => {
       if (!e.date) return true;

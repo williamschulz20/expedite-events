@@ -1522,6 +1522,172 @@ function OrganizersView({
 }
 
 // ---------------------------------------------------------------------------
+// Add Event Modal
+// ---------------------------------------------------------------------------
+
+const ADD_EVENT_CATEGORIES = [
+  { value: "hackathon",   label: "Hackathon" },
+  { value: "demo-day",    label: "Demo Day" },
+  { value: "pitch",       label: "Pitch" },
+  { value: "networking",  label: "Networking" },
+  { value: "fundraising", label: "Fundraising" },
+  { value: "accelerator", label: "Accelerator" },
+  { value: "dinners",     label: "Dinners and Breakfasts" },
+  { value: "workshop",    label: "Workshop" },
+];
+
+function AddEventModal({
+  onClose,
+  onAdded,
+}: {
+  onClose: () => void;
+  onAdded: (event: FounderEvent) => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [date, setDate] = useState("");
+  const [location, setLocation] = useState("");
+  const [url, setUrl] = useState("");
+  const [description, setDescription] = useState("");
+  const [category, setCategory] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/add-event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, date, location, url, description, category, source: "manual" }),
+      });
+      const data = await res.json() as { event?: FounderEvent; error?: string };
+      if (!res.ok) throw new Error(data.error ?? "Failed to add event");
+      if (data.event) onAdded(data.event);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl p-6">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-base font-bold text-gray-900">Add Event</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Title <span className="text-red-500">*</span></label>
+            <input
+              type="text"
+              required
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g. Founder Pitch Night London"
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-gray-400 focus:outline-none"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Date <span className="text-red-500">*</span></label>
+              <input
+                type="date"
+                required
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 focus:border-gray-400 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Category</label>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 focus:border-gray-400 focus:outline-none"
+              >
+                <option value="">Auto-detect</option>
+                {ADD_EVENT_CATEGORIES.map((c) => (
+                  <option key={c.value} value={c.value}>{c.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Location / City <span className="text-red-500">*</span></label>
+            <input
+              type="text"
+              required
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder="e.g. London, UK"
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-gray-400 focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">URL</label>
+            <input
+              type="url"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://..."
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-gray-400 focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Description</label>
+            <textarea
+              rows={3}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Brief description of the event..."
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-gray-400 focus:outline-none resize-none"
+            />
+          </div>
+
+          {error && (
+            <p className="text-xs text-red-500">{error}</p>
+          )}
+
+          <div className="flex gap-2 mt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 rounded-lg border border-gray-200 px-4 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 transition"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="flex-1 rounded-lg bg-gray-900 px-4 py-2 text-xs font-semibold text-white hover:bg-gray-700 transition disabled:opacity-40"
+            >
+              {submitting ? "Adding..." : "Add Event"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Identity Modal ("Who are you?")
 // ---------------------------------------------------------------------------
 
@@ -1709,6 +1875,9 @@ export default function Home() {
 
   // Conflict warning
   const [conflictPending, setConflictPending] = useState<{ eventId: string; others: AttendeeInfo[] } | null>(null);
+
+  // Add event modal
+  const [showAddEvent, setShowAddEvent] = useState(false);
 
   // Load identity from localStorage
   useEffect(() => {
@@ -1955,6 +2124,15 @@ export default function Home() {
     <div className="min-h-screen bg-[#fafafa] font-sans antialiased">
 
       {/* Modals */}
+      {showAddEvent && (
+        <AddEventModal
+          onClose={() => setShowAddEvent(false)}
+          onAdded={(event) => {
+            setEvents((prev) => [event, ...prev]);
+            setShowAddEvent(false);
+          }}
+        />
+      )}
       {showIdentityModal && (
         <IdentityModal teamMembers={teamMembers.length > 0 ? teamMembers : DEFAULT_TEAM} onSelect={handleIdentitySelect} />
       )}
@@ -1998,6 +2176,17 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Add Event */}
+            <button
+              onClick={() => setShowAddEvent(true)}
+              title="Manually add an event"
+              className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 shadow-sm transition hover:bg-gray-50"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+              <span className="hidden sm:inline">Add Event</span>
+            </button>
             {/* Subscribe in Apple Calendar */}
             <a
               href="webcal://localhost:3000/api/calendar"
