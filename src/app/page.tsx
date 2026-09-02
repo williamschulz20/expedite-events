@@ -212,6 +212,32 @@ function countryOfEvent(location: string): string {
   return COUNTRY_BY_CITY[extractCity(location)] ?? "Other";
 }
 
+// Build a Google Calendar "add event" link. Times without a Z are treated as
+// the viewer's local time, which matches how scraped local times are stored.
+function googleCalendarUrl(ev: FounderEvent): string {
+  const fmt = (iso: string) => {
+    const hasZ = /Z$/i.test(iso);
+    const digits = iso.replace(/[-:]/g, "").replace(/\.\d+/, "");
+    const core = digits.length >= 15 ? digits.slice(0, 15) : `${digits.slice(0, 8)}T000000`;
+    return hasZ ? `${core}Z` : core;
+  };
+  const params = new URLSearchParams({ action: "TEMPLATE", text: ev.title || "Event" });
+  if (ev.date) {
+    const start = fmt(ev.date);
+    let end: string;
+    if (ev.endDate) end = fmt(ev.endDate);
+    else {
+      const d = new Date(ev.date);
+      end = isNaN(d.getTime()) ? start : fmt(new Date(d.getTime() + 2 * 60 * 60 * 1000).toISOString().replace(/Z$/, /Z$/i.test(ev.date) ? "Z" : ""));
+    }
+    params.set("dates", `${start}/${end}`);
+  }
+  const details = [ev.description, ev.url ? `RSVP: ${ev.url}` : ""].filter(Boolean).join("\n\n");
+  if (details) params.set("details", details.slice(0, 1500));
+  if (ev.location) params.set("location", ev.location);
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
 // Detect if event is free or paid from title/description
 function detectPricing(title: string, desc: string): "free" | "paid" | null {
   const text = `${title} ${desc}`.toLowerCase();
@@ -589,12 +615,12 @@ function EventRow({
       {/* Right column: actions + team attendance */}
       <div className="flex shrink-0 flex-col items-end gap-2 mt-0.5" onClick={(e) => e.stopPropagation()}>
         {/* Action button */}
-        {!isAccepted && event.dbId && (
+        {event.dbId && (
           <button
             onClick={() => onAccept(event.dbId!)}
             className="rounded-md border border-gray-900 bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-gray-700"
           >
-            Accept
+            {isAccepted ? "📅 Re-add to Calendar" : "📅 Add to Calendar"}
           </button>
         )}
         {isAccepted && !isPast && (
@@ -887,7 +913,7 @@ function EventDetailModal({
                 <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
               </svg>
             </a>
-            {!isAccepted && event.dbId && (
+            {event.dbId && (
               <button
                 onClick={() => { onAccept(event.dbId!); onClose(); }}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-4 py-2 text-xs font-semibold text-gray-700 shadow-sm transition hover:bg-gray-50"
@@ -1788,7 +1814,6 @@ function IdentityModal({
 
 function CalendarSetupModal({ onDone }: { onDone: () => void }) {
   const [googleDone, setGoogleDone] = useState(false);
-  const [appleDone, setAppleDone] = useState(false);
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
@@ -1806,18 +1831,6 @@ function CalendarSetupModal({ onDone }: { onDone: () => void }) {
             />
             <div>
               <p className="text-sm font-semibold text-gray-900">Google Calendar</p>
-              <p className="text-[11px] text-gray-400">Mark when you&apos;ve subscribed</p>
-            </div>
-          </label>
-          <label className="flex items-center gap-3 cursor-pointer rounded-xl border border-gray-200 px-4 py-3 hover:bg-gray-50 transition">
-            <input
-              type="checkbox"
-              checked={appleDone}
-              onChange={(e) => setAppleDone(e.target.checked)}
-              className="h-4 w-4 rounded accent-gray-900"
-            />
-            <div>
-              <p className="text-sm font-semibold text-gray-900">Apple Calendar</p>
               <p className="text-[11px] text-gray-400">Mark when you&apos;ve subscribed</p>
             </div>
           </label>
@@ -2024,31 +2037,21 @@ export default function Home() {
 
   useEffect(() => { fetchEvents(); }, [fetchEvents]);
 
-  const handleAccept = useCallback(async (dbId: string) => {
-    setAcceptingId(dbId);
-    try {
-      const res = await fetch("/api/accept", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dbId }),
-      });
-      if (!res.ok) return;
-
-      const blob = await res.blob();
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement("a");
-      a.href     = url;
-      a.download = "event.ics";
-      a.click();
-      URL.revokeObjectURL(url);
-
-      setEvents((prev) =>
-        prev.map((e) => e.dbId === dbId ? { ...e, acceptedAt: new Date().toISOString() } : e)
-      );
-    } finally {
-      setAcceptingId(null);
-    }
-  }, []);
+  const handleAccept = useCallback((dbId: string) => {
+    const ev = events.find((e) => e.dbId === dbId);
+    if (!ev) return;
+    // Open Google Calendar synchronously so popup blockers allow it.
+    window.open(googleCalendarUrl(ev), "_blank", "noopener");
+    // Record the accept in the background; keep the button available either way.
+    fetch("/api/accept", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dbId }),
+    }).catch(() => {});
+    setEvents((prev) =>
+      prev.map((e) => e.dbId === dbId ? { ...e, acceptedAt: new Date().toISOString() } : e)
+    );
+  }, [events]);
 
   const handleAttend = useCallback(async (dbId: string) => {
     await fetch("/api/attend", {
@@ -2284,17 +2287,23 @@ export default function Home() {
               </svg>
               <span className="hidden sm:inline">Add Event</span>
             </button>
-            {/* Subscribe in Apple Calendar */}
-            <a
-              href="webcal://localhost:3000/api/calendar"
-              title="Subscribe to your accepted events in Apple Calendar"
+            {/* Subscribe to the accepted-events feed in Google Calendar */}
+            <button
+              onClick={() =>
+                window.open(
+                  `https://calendar.google.com/calendar/render?cid=${encodeURIComponent(window.location.origin + "/api/calendar")}`,
+                  "_blank",
+                  "noopener"
+                )
+              }
+              title="Subscribe to your accepted events in Google Calendar"
               className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 shadow-sm transition hover:bg-gray-50"
             >
               <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
               </svg>
               <span className="hidden sm:inline">Subscribe</span>
-            </a>
+            </button>
             <button
               onClick={fetchEvents}
               disabled={loading}
