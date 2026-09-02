@@ -1,38 +1,35 @@
 import NextAuth from "next-auth";
-import Google from "next-auth/providers/google";
+import { authConfig } from "./auth.config";
+import { supabase } from "@/lib/supabase";
 
 // ---------------------------------------------------------------------------
-// Google sign-in.
+// Google sign-in with a database allowlist.
 //
-// Replaces the "Who are you?" profile picker, which was not authentication:
-// anyone could claim to be anyone, and the deployed URL would be wide open.
-//
-// ALLOWED_EMAIL_DOMAIN (e.g. "expedite.now") restricts sign-in to the company
-// Google Workspace. Leave it unset to allow any Google account.
+// Access policy: a Google account gets in ONLY if its email is on the
+// team_members table. The domain check is a first gate; the table is the
+// source of truth. Adding a teammate = inserting their row (name + email);
+// removing one = deleting it.
 // ---------------------------------------------------------------------------
 const ALLOWED_DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN?.trim().toLowerCase();
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  providers: [
-    Google({
-      // Nudges Google's account chooser toward the right workspace. This is a
-      // hint only; the real check is in signIn below.
-      authorization: ALLOWED_DOMAIN
-        ? { params: { hd: ALLOWED_DOMAIN, prompt: "select_account" } }
-        : { params: { prompt: "select_account" } },
-    }),
-  ],
-  trustHost: true,
+  ...authConfig,
   callbacks: {
     async signIn({ profile }) {
-      if (!ALLOWED_DOMAIN) return true;
       const email = (profile?.email ?? "").toLowerCase();
-      // Verify the domain ourselves; the hd param alone is not a security control.
-      return email.endsWith(`@${ALLOWED_DOMAIN}`) && profile?.email_verified !== false;
+      if (!email || profile?.email_verified === false) return false;
+      if (ALLOWED_DOMAIN && !email.endsWith(`@${ALLOWED_DOMAIN}`)) return false;
+
+      // Allowlist: only emails present in team_members may sign in.
+      const { data } = await supabase
+        .from("team_members")
+        .select("id")
+        .eq("email", email)
+        .single();
+      return Boolean(data);
     },
     async session({ session }) {
       return session;
     },
   },
-  pages: { signIn: "/signin" },
 });

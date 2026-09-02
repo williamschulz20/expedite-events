@@ -1,11 +1,14 @@
-import { auth } from "@/auth";
+import NextAuth from "next-auth";
+import { authConfig } from "./auth.config";
 import type { NextRequest } from "next/server";
 
-// Auth only engages once Google credentials exist. Without them (local dev
-// before setup) the app stays usable instead of locking everyone out.
+// Session gate only; runs on the edge, so it uses the DB-free config. The
+// allowlist itself is enforced at sign-in time in auth.ts.
 const AUTH_ENABLED = Boolean(
   process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.AUTH_SECRET
 );
+
+const { auth } = NextAuth(authConfig);
 
 function isPublic(pathname: string) {
   return (
