@@ -79,12 +79,20 @@ export async function GET(request: Request) {
   // STEP 1: Try Supabase cache first (includes accepted/attended state)
   if (!refresh) {
     try {
-      const { data: cached } = await supabase
-        .from("scraped_events")
-        .select("*")
-        .gte("starts_at", new Date().toISOString())
-        .lte("starts_at", new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString())
-        .order("starts_at", { ascending: true });
+      // Supabase caps each request at 1,000 rows; page through the full year.
+      const cached: Record<string, unknown>[] = [];
+      for (let page = 0; page < 10; page++) {
+        const { data: batch } = await supabase
+          .from("scraped_events")
+          .select("*")
+          .gte("starts_at", new Date().toISOString())
+          .lte("starts_at", new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString())
+          .order("starts_at", { ascending: true })
+          .range(page * 1000, page * 1000 + 999);
+        if (!batch || batch.length === 0) break;
+        cached.push(...batch);
+        if (batch.length < 1000) break;
+      }
 
       if (cached && cached.length > 0) {
         const events = dedup(cached.map(rowToEvent));

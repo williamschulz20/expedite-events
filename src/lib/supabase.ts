@@ -60,6 +60,7 @@ class Query<T = any[]> implements PromiseLike<Result<T>> {
   private filters: Filter[] = [];
   private orderBy: { col: string; asc: boolean } | null = null;
   private lim: number | null = null;
+  private offset = 0;
   private one = false;
   private payload: Row[] = [];
   private conflict: string[] = [];
@@ -107,6 +108,11 @@ class Query<T = any[]> implements PromiseLike<Result<T>> {
   }
   limit(n: number) {
     this.lim = n;
+    return this;
+  }
+  range(from: number, to: number) {
+    this.offset = from;
+    this.lim = to - from + 1;
     return this;
   }
   single() {
@@ -157,6 +163,7 @@ class Query<T = any[]> implements PromiseLike<Result<T>> {
     let q = `SELECT * FROM ${this.table}${sql}`;
     if (this.orderBy) q += ` ORDER BY ${this.orderBy.col} ${this.orderBy.asc ? "ASC" : "DESC"}`;
     if (this.lim != null) q += ` LIMIT ${this.lim}`;
+    if (this.offset > 0) q += ` OFFSET ${this.offset}`;
     const rows = db().prepare(q).all(...params) as Row[];
     const { columns, embeds } = parseSelect(this.sel);
 
