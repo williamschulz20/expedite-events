@@ -8,6 +8,10 @@ const ALLOWED_DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN?.trim().toLowerCase();
 export const authConfig = {
   providers: [
     Google({
+      // next-auth v5 only auto-reads AUTH_GOOGLE_ID/AUTH_GOOGLE_SECRET; our env
+      // uses explicit names, so pass them explicitly.
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
       authorization: ALLOWED_DOMAIN
         ? { params: { hd: ALLOWED_DOMAIN, prompt: "select_account" } }
         : { params: { prompt: "select_account" } },
