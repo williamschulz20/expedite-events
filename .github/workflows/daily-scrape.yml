@@ -37,10 +37,12 @@ jobs:
 
       - name: Scrape all sources into the shared database
         run: node scripts/scrape-all.mjs
+        timeout-minutes: 60
 
       - name: Deep Eventbrite year sweep
         run: node scripts/eventbrite-year.mjs
-        continue-on-error: true   # rate limits from CI IPs are possible; the daily pass still ran
+        timeout-minutes: 40       # CI IPs are heavily throttled; cap it so the job concludes
+        continue-on-error: true   # whatever it stored before the cap is kept; the daily pass already ran
 
       - name: Report totals
         run: |
