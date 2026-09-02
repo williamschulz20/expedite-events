@@ -42,3 +42,7 @@ next-env.d.ts
 
 # cache files
 *-cache.json
+
+# local sqlite store
+.data/
+.env.local

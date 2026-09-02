@@ -1,20 +1,26 @@
 import { NextResponse } from "next/server";
-import { FounderEvent, categorizeEvent } from "@/lib/types";
+import { FounderEvent, categorizeEvent, scoreLeadQuality } from "@/lib/types";
+import { politeText, throttledBatch } from "@/lib/politeFetch";
 
 // ---------------------------------------------------------------------------
-// GarysGuide regions to scrape
+// GarysGuide regions.
+//
+// The site only publishes two regions, and the query param uses short slugs.
+// The previous list ("sfbay", "newyork", "losangeles", "boston", "austin",
+// "london") is not recognised by the site — those URLs render an empty shell,
+// which was one reason this endpoint returned nothing.
 // ---------------------------------------------------------------------------
 const REGIONS = [
-  { slug: "sfbay", label: "San Francisco Bay Area" },
-  { slug: "newyork", label: "New York City" },
-  { slug: "losangeles", label: "Los Angeles" },
-  { slug: "boston", label: "Boston" },
-  { slug: "austin", label: "Austin" },
-  { slug: "london", label: "London" },
+  { slug: "nyc", label: "New York City" },
+  { slug: "sf", label: "San Francisco Bay Area" },
 ];
 
-const USER_AGENT =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+const HORIZON_DAYS = 365;
+
+const MONTHS: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -27,241 +33,167 @@ function hashString(s: string): string {
   return Math.abs(h).toString(36);
 }
 
-// ---------------------------------------------------------------------------
-// Parse JSON-LD structured data from HTML
-// ---------------------------------------------------------------------------
-function parseJsonLd(html: string, regionLabel: string): FounderEvent[] {
-  const events: FounderEvent[] = [];
-  const jsonLdPattern = /<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-  let match: RegExpExecArray | null;
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)));
+}
 
-  while ((match = jsonLdPattern.exec(html)) !== null) {
-    try {
-      const data = JSON.parse(match[1]);
-      const items = Array.isArray(data) ? data : [data];
+/** Strip tags, decode entities, collapse whitespace. */
+function toText(fragment: string): string {
+  return decodeEntities(fragment.replace(/<[^>]+>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-      for (const item of items) {
-        if (item["@type"] !== "Event" && item["@type"] !== "SocialEvent") continue;
-
-        const title = (item.name || "").trim();
-        if (!title) continue;
-
-        const url = (item.url || "").trim();
-        const description = (item.description || "").replace(/<[^>]*>/g, "").slice(0, 800);
-        const startDate = item.startDate || "";
-        const endDate = item.endDate || undefined;
-
-        const location =
-          item.location?.name ||
-          item.location?.address?.streetAddress ||
-          item.location?.address?.addressLocality ||
-          regionLabel;
-
-        events.push({
-          id: `gg-${hashString(url || title)}`,
-          title: title.slice(0, 200),
-          description,
-          date: startDate,
-          endDate,
-          location: (location || "").slice(0, 300),
-          url: url.startsWith("http") ? url : `https://www.garysguide.com${url}`,
-          source: "garysguide",
-          category: categorizeEvent(title, description),
-        });
-      }
-    } catch {
-      // malformed JSON-LD — skip
-    }
-  }
-
-  return events;
+function pad(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
 }
 
 // ---------------------------------------------------------------------------
-// Parse event cards from HTML via regex patterns
+// GarysGuide markup (verified against the live site).
+//
+// Each listing row is a table cell holding the day, followed by the title,
+// venue and speaker blurb:
+//
+//   <td align='center' valign='top' width='48'><b>Sep 01</b><br/>9:00am</td>
+//   ...
+//   <font class='ftitle'><a href='https://www.garysguide.com/events/<id>/<Slug>'>
+//     <b>AI Enterprise Conference</b></a></font>
+//   <font class='fdescription'><br/><b>Pier Sixty</b>, 60 Chelsea Piers</font>
+//   <font class='fgray'>With Michael Beal <i>(...)</i>, ...</font>
+//
+// Notes that broke the old parser:
+//   * there is no JSON-LD anywhere on the site (listing or detail pages);
+//   * hrefs are absolute and single-quoted, and the path has two segments
+//     (/events/<id>/<Slug>), so the old /events/<slug> relative pattern that
+//     required double quotes never matched;
+//   * the listing carries no year — it is inferred from the current date;
+//   * a trailing "+" on the day (e.g. "Sep 10+") marks a multi-day event.
 // ---------------------------------------------------------------------------
-function parseEventCards(html: string, regionLabel: string): FounderEvent[] {
+const DATE_CELL_RE =
+  /width=['"]48['"]\s*>\s*<b>\s*([A-Za-z]{3})\s+(\d{1,2})\s*(\+?)\s*<\/b>\s*(?:<br\s*\/?>\s*([^<]*))?/gi;
+
+const TITLE_RE =
+  /<font\s+class=['"]ftitle['"]\s*>\s*<a[^>]*href=['"]([^'"]+)['"][^>]*>\s*(?:<b>)?([\s\S]*?)(?:<\/b>)?\s*<\/a>/i;
+
+const VENUE_RE = /<font\s+class=['"]fdescription['"]\s*>([\s\S]*?)<\/font>/i;
+const BLURB_RE = /<font\s+class=['"]fgray['"]\s*>([\s\S]*?)<\/font>/i;
+
+/** "9:00am" -> [9, 0]; defaults to 09:00 when absent or unparseable. */
+function parseClock(raw: string): [number, number] {
+  const m = raw.match(/(\d{1,2}):(\d{2})\s*([ap])\.?m/i);
+  if (!m) return [9, 0];
+  let hour = Number(m[1]) % 12;
+  if (m[3].toLowerCase() === "p") hour += 12;
+  return [hour, Number(m[2])];
+}
+
+/**
+ * The listing omits the year. Resolve it against today: a month/day that would
+ * land more than a month in the past belongs to next year (the site rolls into
+ * January while still showing the tail of December).
+ */
+function resolveIsoDate(
+  monthAbbr: string,
+  day: number,
+  clock: string,
+  now: Date
+): string {
+  const month = MONTHS[monthAbbr.toLowerCase()];
+  if (month === undefined || day < 1 || day > 31) return "";
+
+  const [hour, minute] = parseClock(clock);
+  let year = now.getFullYear();
+  let dt = new Date(year, month, day, hour, minute);
+  if ((dt.getTime() - now.getTime()) / 86_400_000 < -31) {
+    year += 1;
+    dt = new Date(year, month, day, hour, minute);
+  }
+  if (dt.getMonth() !== month || dt.getDate() !== day) return ""; // e.g. Feb 30
+
+  // Local wall-clock ISO — these are venue-local times, so no Z suffix.
+  return `${year}-${pad(month + 1)}-${pad(day)}T${pad(hour)}:${pad(minute)}:00`;
+}
+
+// ---------------------------------------------------------------------------
+// Parse one region listing page
+// ---------------------------------------------------------------------------
+function parseListing(
+  html: string,
+  regionLabel: string,
+  now: Date
+): FounderEvent[] {
   const events: FounderEvent[] = [];
+  if (!html) return events;
 
-  // Pattern 1: event links with /events/ path — e.g. <a href="/events/abc123">Title</a>
-  const eventLinkPattern =
-    /<a[^>]*href\s*=\s*["'](\/events\/[a-zA-Z0-9_-]+(?:\?[^"']*)?)["'][^>]*>([\s\S]*?)<\/a>/gi;
-  let match: RegExpExecArray | null;
-
-  while ((match = eventLinkPattern.exec(html)) !== null) {
-    const path = match[1];
-    const innerHtml = match[2];
-    const title = innerHtml.replace(/<[^>]*>/g, "").trim();
-
-    if (!title || title.length < 3 || title.length > 300) continue;
-
-    const url = `https://www.garysguide.com${path}`;
-    const id = `gg-${hashString(url)}`;
-
-    // Skip if already captured
-    if (events.some((e) => e.id === id)) continue;
-
-    // Try to extract a date near this event card
-    const dateStr = extractNearbyDate(html, match.index);
-
-    events.push({
-      id,
-      title: title.slice(0, 200),
-      description: "",
-      date: dateStr,
-      location: regionLabel,
-      url,
-      source: "garysguide",
-      category: categorizeEvent(title, ""),
+  // Collect the day-cell anchors first so each event's markup can be sliced
+  // out as the span between one day cell and the next.
+  const cells: Array<{ end: number; month: string; day: number; multi: boolean; clock: string }> = [];
+  const starts: number[] = [];
+  DATE_CELL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = DATE_CELL_RE.exec(html)) !== null) {
+    starts.push(m.index);
+    cells.push({
+      end: m.index + m[0].length,
+      month: m[1],
+      day: Number(m[2]),
+      multi: m[3] === "+",
+      clock: (m[4] || "").trim(),
     });
   }
 
-  // Pattern 2: broader event card blocks — look for structured divs/spans with dates
-  const cardPattern =
-    /<(?:div|article|li)[^>]*class\s*=\s*["'][^"']*event[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|article|li)>/gi;
+  for (let i = 0; i < cells.length; i++) {
+    const cell = cells[i];
+    const chunk = html.slice(cell.end, starts[i + 1] ?? html.length);
 
-  while ((match = cardPattern.exec(html)) !== null) {
-    const block = match[1];
-
-    // Extract title from first <a> with href containing /events/
-    const titleMatch = block.match(
-      /<a[^>]*href\s*=\s*["'](\/events\/[a-zA-Z0-9_-]+[^"']*)["'][^>]*>([\s\S]*?)<\/a>/i
-    );
+    const titleMatch = chunk.match(TITLE_RE);
     if (!titleMatch) continue;
 
-    const path = titleMatch[1];
-    const title = titleMatch[2].replace(/<[^>]*>/g, "").trim();
-    if (!title || title.length < 3) continue;
+    const url = decodeEntities(titleMatch[1]).trim();
+    const title = toText(titleMatch[2]);
+    if (!title || !/^https?:\/\//i.test(url)) continue;
 
-    const url = `https://www.garysguide.com${path}`;
-    const id = `gg-${hashString(url)}`;
+    const venueMatch = chunk.match(VENUE_RE);
+    // "<b>Pier Sixty</b>, 60 Chelsea Piers" -> "Pier Sixty, 60 Chelsea Piers"
+    const venue = venueMatch ? toText(venueMatch[1]).replace(/\s+,/g, ",") : "";
 
-    if (events.some((e) => e.id === id)) continue;
+    const blurbMatch = chunk.match(BLURB_RE);
+    const blurb = blurbMatch ? toText(blurbMatch[1]) : "";
 
-    // Extract date from the block
-    const dateStr = extractDateFromBlock(block);
+    const date = resolveIsoDate(cell.month, cell.day, cell.clock, now);
 
-    // Extract location/venue from the block
-    const venue = extractVenueFromBlock(block) || regionLabel;
+    // Venue is a strong signal for the scorer and for the reader, so fold it
+    // into the description alongside the speaker blurb.
+    const description = [blurb, venue && `Venue: ${venue}`, cell.multi ? "Multi-day event." : ""]
+      .filter(Boolean)
+      .join(" ")
+      .slice(0, 800);
+
+    const location =
+      venue && !/^venue,?\s*(to be announced)?$/i.test(venue)
+        ? `${venue}, ${regionLabel}`
+        : regionLabel;
 
     events.push({
-      id,
+      id: `gg-${hashString(url)}`,
       title: title.slice(0, 200),
-      description: "",
-      date: dateStr,
-      location: venue.slice(0, 300),
+      description,
+      date,
+      location: location.slice(0, 300),
       url,
       source: "garysguide",
-      category: categorizeEvent(title, ""),
+      category: categorizeEvent(title, description),
     });
   }
 
   return events;
-}
-
-// ---------------------------------------------------------------------------
-// Date extraction helpers
-// ---------------------------------------------------------------------------
-function extractNearbyDate(html: string, matchIndex: number): string {
-  // Look in the surrounding 500 chars for date patterns
-  const start = Math.max(0, matchIndex - 300);
-  const end = Math.min(html.length, matchIndex + 500);
-  const context = html.slice(start, end);
-  return extractDateFromBlock(context);
-}
-
-function extractDateFromBlock(block: string): string {
-  const text = block.replace(/<[^>]*>/g, " ");
-
-  // ISO date: 2026-04-15
-  const isoMatch = text.match(/(\d{4}-\d{2}-\d{2}(?:T[\d:]+(?:[+-]\d{2}:?\d{2}|Z)?)?)/);
-  if (isoMatch) return isoMatch[1];
-
-  // US-style: April 15, 2026 / Apr 15, 2026
-  const usMatch = text.match(
-    /\b((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s+\d{4})\b/i
-  );
-  if (usMatch) {
-    const parsed = new Date(usMatch[1]);
-    if (!isNaN(parsed.getTime())) return parsed.toISOString();
-  }
-
-  // Slash-style: 04/15/2026 or 15/04/2026
-  const slashMatch = text.match(/\b(\d{1,2}\/\d{1,2}\/\d{4})\b/);
-  if (slashMatch) {
-    const parsed = new Date(slashMatch[1]);
-    if (!isNaN(parsed.getTime())) return parsed.toISOString();
-  }
-
-  return "";
-}
-
-function extractVenueFromBlock(block: string): string {
-  // Look for common venue/location patterns
-  const venueMatch = block.match(
-    /(?:venue|location|where|place|at)\s*[:=]?\s*["']?([^<"'\n]{3,80})/i
-  );
-  if (venueMatch) return venueMatch[1].trim();
-  return "";
-}
-
-// ---------------------------------------------------------------------------
-// Fetch and parse a single region page
-// ---------------------------------------------------------------------------
-async function fetchRegion(
-  slug: string,
-  label: string
-): Promise<FounderEvent[]> {
-  try {
-    const url = `https://www.garysguide.com/events?region=${slug}`;
-    const res = await fetch(url, {
-      headers: {
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "User-Agent": USER_AGENT,
-        "Accept-Language": "en-US,en;q=0.9",
-        Referer: "https://www.garysguide.com/",
-      },
-      signal: AbortSignal.timeout(12_000),
-    });
-
-    if (!res.ok) return [];
-    const html = await res.text();
-
-    // Strategy 1: JSON-LD structured data (most reliable)
-    const jsonLdEvents = parseJsonLd(html, label);
-
-    // Strategy 2: regex-based HTML parsing for event cards
-    const cardEvents = parseEventCards(html, label);
-
-    // Merge — JSON-LD takes priority, then fill in from card parsing
-    const seenIds = new Set(jsonLdEvents.map((e) => e.id));
-    const seenUrls = new Set(jsonLdEvents.map((e) => e.url));
-
-    for (const evt of cardEvents) {
-      if (!seenIds.has(evt.id) && !seenUrls.has(evt.url)) {
-        jsonLdEvents.push(evt);
-        seenIds.add(evt.id);
-        seenUrls.add(evt.url);
-      }
-    }
-
-    return jsonLdEvents;
-  } catch {
-    return [];
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Dedup by URL
-// ---------------------------------------------------------------------------
-function dedup(events: FounderEvent[]): FounderEvent[] {
-  const seen = new Set<string>();
-  return events.filter((e) => {
-    const key = e.url;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -269,26 +201,54 @@ function dedup(events: FounderEvent[]): FounderEvent[] {
 // ---------------------------------------------------------------------------
 export async function GET() {
   try {
-    const allEvents: FounderEvent[] = [];
+    const now = new Date();
+    const horizon = now.getTime() + HORIZON_DAYS * 86_400_000;
+    const floor = now.getTime() - 2 * 86_400_000; // tolerate today / just-passed
 
-    // Batch requests — 3 concurrent at a time
-    for (let i = 0; i < REGIONS.length; i += 3) {
-      const batch = REGIONS.slice(i, i + 3);
-      const results = await Promise.allSettled(
-        batch.map((r) => fetchRegion(r.slug, r.label))
-      );
-      for (const r of results) {
-        if (r.status === "fulfilled") allEvents.push(...r.value);
-      }
+    // Two pages only, fetched gently and sequentially-ish.
+    const pages = await throttledBatch(
+      REGIONS.map((r) => async () => ({
+        label: r.label,
+        html: await politeText(
+          `https://www.garysguide.com/events?region=${r.slug}`,
+          { timeoutMs: 25_000 }
+        ),
+      })),
+      { concurrency: 1, pauseMs: 1200 }
+    );
+
+    const parsed: FounderEvent[] = [];
+    for (const page of pages) {
+      parsed.push(...parseListing(page.html, page.label, now));
     }
 
-    const filtered = dedup(allEvents).filter((e) => {
-      if (!e.title) return false;
+    // Dedup by canonical URL.
+    const seen = new Set<string>();
+    const unique = parsed.filter((e) => {
+      if (seen.has(e.url)) return false;
+      seen.add(e.url);
       return true;
     });
 
-    // Sort by date (events with dates first, then undated)
-    filtered.sort((a, b) => {
+    // Score, and keep what the pipeline would actually store (score > 0).
+    const scored: FounderEvent[] = [];
+    for (const e of unique) {
+      if (e.date) {
+        const t = new Date(e.date).getTime();
+        if (Number.isFinite(t) && (t < floor || t > horizon)) continue;
+      }
+      const sc = scoreLeadQuality(e.title, e.description);
+      if (sc.score <= 0) continue;
+      scored.push({
+        ...e,
+        leadScore: sc.score,
+        leadTier: sc.tier,
+        highLeverage: sc.highLeverage,
+        leverageReason: sc.leverageReason,
+      });
+    }
+
+    scored.sort((a, b) => {
       if (!a.date && !b.date) return 0;
       if (!a.date) return 1;
       if (!b.date) return -1;
@@ -296,12 +256,16 @@ export async function GET() {
     });
 
     return NextResponse.json({
-      events: filtered,
-      count: filtered.length,
+      events: scored,
+      count: scored.length,
+      parsed: unique.length,
       source: "garysguide",
     });
   } catch (error) {
     console.error("GarysGuide route error:", error);
-    return NextResponse.json({ events: [], count: 0, source: "garysguide" });
+    return NextResponse.json(
+      { events: [], count: 0, parsed: 0, source: "garysguide" },
+      { status: 500 }
+    );
   }
 }

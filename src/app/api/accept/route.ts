@@ -11,7 +11,6 @@ export async function POST(request: Request) {
 
     // Fetch the event
     const { data: event, error } = await supabase
-      .schema("event_scraper")
       .from("scraped_events")
       .select("*")
       .eq("id", dbId)
@@ -23,7 +22,6 @@ export async function POST(request: Request) {
 
     // Mark as accepted
     await supabase
-      .schema("event_scraper")
       .from("scraped_events")
       .update({ accepted_at: new Date().toISOString() })
       .eq("id", dbId);

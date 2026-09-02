@@ -9,7 +9,6 @@ export async function POST(request: Request) {
     if (!dbId) return NextResponse.json({ error: "dbId required" }, { status: 400 });
 
     const { error } = await supabase
-      .schema("event_scraper")
       .from("scraped_events")
       .update({ attended_at: new Date().toISOString() })
       .eq("id", dbId);

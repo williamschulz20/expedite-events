@@ -1,11 +1,48 @@
 import { NextResponse } from "next/server";
 import { FounderEvent, categorizeEvent } from "@/lib/types";
+import { politeText, throttledBatch } from "@/lib/politeFetch";
+
+export const dynamic = "force-dynamic";
 
 // ---------------------------------------------------------------------------
 // F6S event scraper
-// Fetches upcoming events from f6s.com search pages, parsing HTML for event
-// cards, JSON-LD, or link patterns like /event/<slug>.
+//
+// STATUS (verified 2026-09-02): f6s.com is CLOSED to this scraper.
+//
+//  1. Every content path (/events, /events/<city>, /events?when=upcoming)
+//     returns HTTP 200 with an Imperva / "reese84" anti-bot interstitial —
+//     <title>Checking your browser</title>, <meta name="captcha-challenge">,
+//     a /v2-captcha script and a "We think you might be a bot" block page.
+//     The real listing markup is never served; there is nothing to parse.
+//     https://www.f6s.com/sitemaps/index-sitemap.xml returns 403 with the
+//     same body, so the sitemap is not a way around it either.
+//
+//  2. https://www.f6s.com/robots.txt ends with
+//         User-agent: *
+//         Disallow: /
+//     Only a named allowlist (Googlebot, bingbot, Applebot, OAI-SearchBot,
+//     PerplexityBot, …) is permitted to crawl at all.
+//
+// Getting real data out would mean solving the JS/captcha challenge or
+// spoofing an allowlisted crawler's identity. We do neither. This route
+// therefore makes ONE gentle probe per call, reports the block honestly
+// (blocked: true + reason) instead of pretending the source is merely empty,
+// and only parses if F6S ever serves real HTML again. The old version fired
+// 16 city requests per call into that wall, which is how you earn an IP ban.
 // ---------------------------------------------------------------------------
+
+const BASE = "https://www.f6s.com";
+const PROBE_URL = `${BASE}/events`;
+
+// Only crawled if the probe shows F6S is actually serving listing HTML.
+const CITY_PATHS = [
+  "/events/london",
+  "/events/berlin",
+  "/events/new-york",
+  "/events/san-francisco",
+  "/events/paris",
+  "/events/amsterdam",
+];
 
 function hashString(s: string): string {
   let h = 0;
@@ -16,23 +53,20 @@ function hashString(s: string): string {
   return Math.abs(h).toString(36);
 }
 
-const CITIES = [
-  "London", "Berlin", "Paris", "Amsterdam", "San Francisco", "Tallinn",
-  "Stockholm", "Helsinki", "Dublin", "Lisbon", "Barcelona", "Zurich",
-  "Vienna", "Warsaw", "Munich", "New York",
-];
-
-const CONCURRENCY = 4;
-
-const HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "en-GB,en;q=0.9",
-};
+/** True when the response is the anti-bot interstitial rather than a page. */
+function isChallengePage(html: string): boolean {
+  if (!html) return true;
+  return (
+    /captcha-challenge/i.test(html) ||
+    /<title>\s*Checking your browser\s*<\/title>/i.test(html) ||
+    /reeseSkipExpirationCheck/i.test(html) ||
+    /We think you might be a bot/i.test(html) ||
+    /\/v2-captcha/i.test(html)
+  );
+}
 
 // ---------------------------------------------------------------------------
-// Parse events from HTML
+// Parsing (only reachable if F6S serves real markup)
 // ---------------------------------------------------------------------------
 interface RawEvent {
   title: string;
@@ -41,238 +75,221 @@ interface RawEvent {
   location: string;
 }
 
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;|&apos;|&rsquo;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function absolute(href: string): string {
+  if (!href) return "";
+  return href.startsWith("http") ? href : `${BASE}${href.startsWith("/") ? "" : "/"}${href}`;
+}
+
+const MONTHS: Record<string, string> = {
+  jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+  jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
+};
+
+/** "15 Jan 2026" / "Jan 15, 2026" -> ISO. Returns "" when unparseable. */
+function parseLooseDate(text: string): string {
+  const dmy = text.match(
+    /(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{4})/i
+  );
+  if (dmy) {
+    const month = MONTHS[dmy[2].toLowerCase().slice(0, 3)];
+    if (month) return `${dmy[3]}-${month}-${dmy[1].padStart(2, "0")}T09:00:00Z`;
+  }
+  const mdy = text.match(
+    /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})/i
+  );
+  if (mdy) {
+    const month = MONTHS[mdy[1].toLowerCase().slice(0, 3)];
+    if (month) return `${mdy[3]}-${month}-${mdy[2].padStart(2, "0")}T09:00:00Z`;
+  }
+  const iso = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}T09:00:00Z`;
+  return "";
+}
+
+type LdNode = Record<string, unknown>;
+
+function ldLocation(loc: unknown): string {
+  if (typeof loc === "string") return decodeEntities(loc);
+  if (loc && typeof loc === "object") {
+    const o = loc as LdNode;
+    if (typeof o.name === "string") return decodeEntities(o.name);
+    const addr = o.address;
+    if (typeof addr === "string") return decodeEntities(addr);
+    if (addr && typeof addr === "object") {
+      const a = addr as LdNode;
+      const parts = [a.addressLocality, a.addressRegion, a.addressCountry]
+        .filter((p): p is string => typeof p === "string");
+      if (parts.length) return decodeEntities(parts.join(", "));
+    }
+  }
+  return "";
+}
+
+function collectLdNodes(value: unknown, out: LdNode[]): void {
+  if (Array.isArray(value)) {
+    for (const v of value) collectLdNodes(v, out);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  const node = value as LdNode;
+  out.push(node);
+  if (node["@graph"]) collectLdNodes(node["@graph"], out);
+  if (Array.isArray(node.itemListElement)) {
+    for (const el of node.itemListElement) {
+      collectLdNodes(el, out);
+      if (el && typeof el === "object" && (el as LdNode).item) {
+        collectLdNodes((el as LdNode).item, out);
+      }
+    }
+  }
+}
+
 function parseJsonLd(html: string): RawEvent[] {
   const events: RawEvent[] = [];
-  const jsonLdMatches: RegExpExecArray[] = [];
-  const jsonLdRe = /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi;
-  let jsonLdM: RegExpExecArray | null;
-  while ((jsonLdM = jsonLdRe.exec(html)) !== null) {
-    jsonLdMatches.push(jsonLdM);
-  }
-  for (const match of jsonLdMatches) {
+  const re = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    let parsed: unknown;
     try {
-      const ld = JSON.parse(match[1]);
-      const items = Array.isArray(ld) ? ld : [ld];
-      for (const item of items) {
-        if (
-          (item["@type"] === "Event" || item["@type"] === "BusinessEvent") &&
-          item.name
-        ) {
-          const loc =
-            typeof item.location === "string"
-              ? item.location
-              : item.location?.name ?? item.location?.address?.addressLocality ?? "";
-          events.push({
-            title: item.name,
-            url: item.url ?? "",
-            date: item.startDate ?? "",
-            location: loc,
-          });
-        }
-      }
+      parsed = JSON.parse(m[1].trim());
     } catch {
-      /* skip malformed JSON-LD */
+      continue;
+    }
+    const nodes: LdNode[] = [];
+    collectLdNodes(parsed, nodes);
+    for (const node of nodes) {
+      const type = node["@type"];
+      const types = Array.isArray(type) ? type : [type];
+      const isEvent = types.some(
+        (t) => typeof t === "string" && /Event$/i.test(t)
+      );
+      if (!isEvent || typeof node.name !== "string") continue;
+      events.push({
+        title: decodeEntities(node.name),
+        url: typeof node.url === "string" ? absolute(node.url) : "",
+        date: typeof node.startDate === "string" ? node.startDate : "",
+        location: ldLocation(node.location),
+      });
     }
   }
   return events;
 }
 
-function parseEventLinks(html: string, city: string): RawEvent[] {
+/** Fallback: anchors to /event/<slug>, with the anchor text as the title. */
+function parseEventLinks(html: string, fallbackLocation: string): RawEvent[] {
   const events: RawEvent[] = [];
-  // Match links to /event/<slug> with surrounding context for title
-  const linkPattern =
-    /href="((?:https?:\/\/(?:www\.)?f6s\.com)?\/event\/([^"]+))"/gi;
+  const re = /<a[^>]+href=["']((?:https?:\/\/(?:www\.)?f6s\.com)?\/event\/[^"'#?]+)[^"']*["'][^>]*>([\s\S]{0,400}?)<\/a>/gi;
   let m: RegExpExecArray | null;
-
-  while ((m = linkPattern.exec(html)) !== null) {
-    const href = m[1].startsWith("http")
-      ? m[1]
-      : `https://www.f6s.com${m[1]}`;
-    const slug = m[2];
-    // Convert slug to readable title
-    const title = slug
-      .replace(/-/g, " ")
-      .replace(/\b\w/g, (c) => c.toUpperCase());
-
-    // Try to find a date near this link (within 500 chars after)
-    const afterLink = html.substring(m.index, m.index + 800);
-    const dateMatch = afterLink.match(
-      /(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})/i
-    ) ?? afterLink.match(
-      /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(\d{4})/i
-    );
-
-    let date = "";
-    if (dateMatch) {
-      date = parseDateFromMatch(dateMatch);
-    }
-
+  while ((m = re.exec(html)) !== null) {
+    const title = decodeEntities(m[2].replace(/<[^>]+>/g, " "));
+    if (title.length < 4) continue;
+    const context = html.slice(m.index, m.index + 1200).replace(/<[^>]+>/g, " ");
     events.push({
       title,
-      url: href,
-      date,
-      location: city,
+      url: absolute(m[1]),
+      date: parseLooseDate(decodeEntities(context)),
+      location: fallbackLocation,
     });
   }
-
   return events;
 }
 
-function parseEventCards(html: string, city: string): RawEvent[] {
-  const events: RawEvent[] = [];
-
-  // F6S uses card-like structures with titles in h3/h4/a tags
-  // Pattern: look for event titles near links
-  const cardPattern =
-    /<(?:h[2-4]|a)[^>]*class="[^"]*(?:event|card|title)[^"]*"[^>]*>([^<]+)<\/(?:h[2-4]|a)>/gi;
-  let m: RegExpExecArray | null;
-
-  while ((m = cardPattern.exec(html)) !== null) {
-    const title = m[1].trim();
-    if (!title || title.length < 3) continue;
-
-    // Look for a link near this card
-    const surrounding = html.substring(
-      Math.max(0, m.index - 300),
-      m.index + 500
-    );
-    const linkMatch = surrounding.match(
-      /href="((?:https?:\/\/(?:www\.)?f6s\.com)?\/event\/[^"]+)"/i
-    );
-    const url = linkMatch
-      ? linkMatch[1].startsWith("http")
-        ? linkMatch[1]
-        : `https://www.f6s.com${linkMatch[1]}`
-      : "";
-
-    // Try to find date
-    const dateMatch = surrounding.match(
-      /(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})/i
-    );
-    const date = dateMatch ? parseDateFromMatch(dateMatch) : "";
-
-    events.push({ title, url, date, location: city });
-  }
-
-  return events;
+function toFounderEvents(raw: RawEvent[], fallbackLocation: string): FounderEvent[] {
+  return raw.map((r) => {
+    const location = r.location || fallbackLocation;
+    const description = `F6S startup event${location ? ` in ${location}` : ""}`;
+    return {
+      id: `f6s-${hashString(r.url || r.title + r.date)}`,
+      title: r.title,
+      description,
+      date: r.date,
+      location,
+      url: r.url || PROBE_URL,
+      source: "f6s",
+      category: categorizeEvent(r.title, description),
+    };
+  });
 }
 
-function parseDateFromMatch(m: RegExpMatchArray): string {
-  const months: Record<string, string> = {
-    jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
-    jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
-  };
-
-  // Two formats: "15 Jan 2026" or "Jan 15, 2026"
-  let day: string;
-  let month: string;
-  let year: string;
-
-  if (/^\d/.test(m[1])) {
-    // "15 Jan 2026"
-    day = m[1].padStart(2, "0");
-    month = months[m[2].toLowerCase().substring(0, 3)] ?? "01";
-    year = m[3];
-  } else {
-    // "Jan 15, 2026"
-    month = months[m[1].toLowerCase().substring(0, 3)] ?? "01";
-    day = m[2].padStart(2, "0");
-    year = m[3];
+function parsePage(html: string, fallbackLocation: string): FounderEvent[] {
+  const raw = [...parseJsonLd(html), ...parseEventLinks(html, fallbackLocation)];
+  const seen = new Set<string>();
+  const deduped: RawEvent[] = [];
+  for (const ev of raw) {
+    const key = ev.url || ev.title.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(ev);
   }
-
-  return `${year}-${month}-${day}T09:00:00Z`;
+  return toFounderEvents(deduped, fallbackLocation);
 }
 
-// ---------------------------------------------------------------------------
-// Fetch and parse a single city page
-// ---------------------------------------------------------------------------
-async function fetchCity(city: string): Promise<FounderEvent[]> {
-  const encodedCity = encodeURIComponent(city);
-  const url = `https://www.f6s.com/events?type=event&location=${encodedCity}&when=upcoming`;
-
-  try {
-    const res = await fetch(url, {
-      headers: HEADERS,
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) return [];
-    const html = await res.text();
-
-    // Try multiple parsing strategies, merge results
-    const fromJsonLd = parseJsonLd(html);
-    const fromLinks = parseEventLinks(html, city);
-    const fromCards = parseEventCards(html, city);
-
-    // Merge all, deduplicate by URL
-    const seen = new Set<string>();
-    const rawEvents: RawEvent[] = [];
-
-    for (const list of [fromJsonLd, fromLinks, fromCards]) {
-      for (const ev of list) {
-        const key = ev.url || ev.title;
-        if (!seen.has(key)) {
-          seen.add(key);
-          rawEvents.push(ev);
-        }
-      }
-    }
-
-    return rawEvents.map((raw) => {
-      const description = `F6S event in ${raw.location || city}`;
-      return {
-        id: `f6s-${hashString(raw.title + (raw.date || city))}`,
-        title: raw.title,
-        description,
-        date: raw.date,
-        location: raw.location || city,
-        url: raw.url || url,
-        source: "f6s" as const,
-        category: categorizeEvent(raw.title, description),
-      };
-    });
-  } catch {
-    // Timeout, network error, etc.
-    return [];
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Batch runner — 4 concurrent fetches at a time
-// ---------------------------------------------------------------------------
-async function fetchAllCities(): Promise<FounderEvent[]> {
-  const allEvents: FounderEvent[] = [];
-
-  for (let i = 0; i < CITIES.length; i += CONCURRENCY) {
-    const batch = CITIES.slice(i, i + CONCURRENCY);
-    const results = await Promise.allSettled(batch.map(fetchCity));
-
-    for (const r of results) {
-      if (r.status === "fulfilled") {
-        allEvents.push(...r.value);
-      }
-    }
-  }
-
-  return allEvents;
+function cityFromPath(path: string): string {
+  return path
+    .replace("/events/", "")
+    .split("-")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
 }
 
 // ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
 export async function GET() {
-  const rawEvents = await fetchAllCities();
+  const probe = await politeText(PROBE_URL, { retries: 1, timeoutMs: 20_000 });
 
-  // Deduplicate globally by id
-  const seen = new Set<string>();
-  const events: FounderEvent[] = [];
-  for (const ev of rawEvents) {
-    if (!seen.has(ev.id)) {
-      seen.add(ev.id);
-      events.push(ev);
-    }
+  if (isChallengePage(probe)) {
+    // Honest empty result: the source is blocked, not barren. Do NOT fabricate
+    // events here and do NOT hammer the remaining city pages.
+    return NextResponse.json({
+      events: [],
+      count: 0,
+      source: "f6s",
+      blocked: true,
+      reason:
+        "f6s.com serves an Imperva anti-bot interstitial (\"Checking your browser\" / captcha-challenge) on every listing URL, and robots.txt sets `User-agent: * / Disallow: /`. No event markup is reachable without circumventing bot detection, which this scraper will not do.",
+    });
   }
 
-  // Sort by date ascending (undated events at the end)
+  const collected: FounderEvent[] = [...parsePage(probe, "")];
+
+  const pages = await throttledBatch(
+    CITY_PATHS.map((path) => async () => {
+      const html = await politeText(`${BASE}${path}`, { retries: 1 });
+      if (isChallengePage(html)) return [] as FounderEvent[];
+      return parsePage(html, cityFromPath(path));
+    }),
+    { concurrency: 2, pauseMs: 1200 }
+  );
+  for (const list of pages) collected.push(...list);
+
+  // Dedupe, drop past events, keep the rolling 365-day horizon.
+  const now = Date.now();
+  const horizon = now + 365 * 24 * 60 * 60 * 1000;
+  const seen = new Set<string>();
+  const events: FounderEvent[] = [];
+  for (const ev of collected) {
+    if (seen.has(ev.id)) continue;
+    if (ev.date) {
+      const t = new Date(ev.date).getTime();
+      if (!Number.isFinite(t) || t < now || t > horizon) continue;
+    }
+    seen.add(ev.id);
+    events.push(ev);
+  }
+
   events.sort((a, b) => {
     if (!a.date && !b.date) return 0;
     if (!a.date) return 1;

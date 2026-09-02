@@ -1,16 +1,48 @@
 import { NextResponse } from "next/server";
 import { FounderEvent, categorizeEvent, scoreLeadQuality } from "@/lib/types";
+import { politeJSON, sleep } from "@/lib/politeFetch";
 import fs from "fs";
 import path from "path";
 
-const CACHE_FILE = path.join(process.cwd(), "luma-cache.json");
+// ---------------------------------------------------------------------------
+// Luma scraper.
+//
+// The old version parsed a city's HTML page, which only ever exposes the next
+// ~20 events. That capped coverage at a few weeks. Luma's discover API is
+// cursor-paginated, so we can walk a full 365 days per city and pick up the
+// host list (the "champions") along the way.
+// ---------------------------------------------------------------------------
 
+const CACHE_FILE = path.join(process.cwd(), "luma-cache.json");
+const PLACES_FILE = path.join(process.cwd(), ".data", "luma-places.json");
+
+// Luma's own discover slugs, not city names: New York is "nyc", San Francisco
+// is "sf". Ids for these are cached in .data/luma-places.json by
+// scripts/resolve-places.mjs.
 const CITIES = [
+  // North America
+  "nyc", "sf", "la", "bay-area", "palo-alto", "brooklyn", "seattle", "austin",
+  "boston", "chicago", "miami", "denver", "toronto", "vancouver", "montreal",
+  "atlanta", "dc", "philadelphia", "san-diego", "dallas", "houston", "portland",
+  "phoenix", "nashville", "slc", "pittsburgh", "detroit", "minneapolis",
+  "boulder", "raleigh", "san-jose",
+  // Europe
   "london", "berlin", "paris", "amsterdam", "munich", "barcelona", "lisbon",
   "stockholm", "helsinki", "dublin", "zurich", "copenhagen", "vienna", "madrid",
-  "warsaw", "brussels", "geneva", "hamburg", "milan", "rome", "budapest", "prague",
-  "new-york", "los-angeles", "austin", "boston", "tallinn", "oslo",
+  "warsaw", "brussels", "geneva", "hamburg", "milan", "rome", "budapest",
+  "prague", "tallinn", "oslo", "manchester", "edinburgh", "cambridge", "oxford",
+  "bristol", "porto", "valencia", "krakow", "bucharest", "sofia", "athens",
+  "istanbul", "riga", "vilnius", "ljubljana", "zagreb", "luxembourg",
+  "rotterdam", "eindhoven", "cologne", "frankfurt", "stuttgart", "dusseldorf",
+  "leipzig", "lyon", "marseille", "turin", "florence", "naples", "seville",
+  "malaga", "bilbao", "gothenburg", "malmo", "aarhus", "bergen", "reykjavik",
+  "belfast", "glasgow", "leeds",
 ];
+
+// Rolling one-year horizon, recomputed on every run.
+const HORIZON_DAYS = 365;
+const PAGE_SIZE = 50;
+const MAX_PAGES_PER_CITY = 14;
 
 function loadCache(): FounderEvent[] {
   try {
@@ -18,105 +50,145 @@ function loadCache(): FounderEvent[] {
   } catch {}
   return [];
 }
-
 function saveCache(events: FounderEvent[]) {
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(events, null, 2));
+  try { fs.writeFileSync(CACHE_FILE, JSON.stringify(events, null, 2)); } catch {}
 }
 
-async function scrapeLumaCity(slug: string): Promise<Array<{ id: string; t: string; d: string; ed?: string; u: string; c: string; ds: string }>> {
+function loadPlaces(): Record<string, string> {
   try {
-    const res = await fetch(`https://lu.ma/${slug}?k=p`, {
-      headers: {
-        Accept: "text/html,application/xhtml+xml",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept-Language": "en-GB,en;q=0.9",
-      },
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) return [];
-    const html = await res.text();
-    const m = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
-    if (!m) return [];
-    const nd = JSON.parse(m[1]);
-    const d = nd.props?.pageProps?.initialData?.data;
-    if (!d) return [];
-    const city = d.page?.place?.name || slug;
-    const evts = [...(d.events || []), ...(d.featured_events || [])];
-    return evts
-      .map((e: Record<string, unknown>) => {
-        const ev = (e as { event?: Record<string, unknown> }).event || e;
-        return {
-          id: ev.api_id as string,
-          t: ev.name as string,
-          d: ev.start_at as string,
-          ed: ev.end_at as string | undefined,
-          u: (ev.url as string) || (ev.api_id as string),
-          c: city,
-          ds: ((ev.description_short as string) || "").slice(0, 300),
-        };
-      })
-      .filter((e) => e.id);
-  } catch {
-    return [];
+    if (fs.existsSync(PLACES_FILE)) return JSON.parse(fs.readFileSync(PLACES_FILE, "utf-8"));
+  } catch {}
+  return {};
+}
+function savePlaces(p: Record<string, string>) {
+  try {
+    fs.mkdirSync(path.dirname(PLACES_FILE), { recursive: true });
+    fs.writeFileSync(PLACES_FILE, JSON.stringify(p, null, 2));
+  } catch {}
+}
+
+/** A city's discover-place id, resolved once via the JSON API and cached. */
+async function resolvePlaceId(slug: string, places: Record<string, string>): Promise<string | null> {
+  if (places[slug]) return places[slug];
+  const data = await politeJSON<{ place?: { api_id?: string } }>(
+    `https://api.lu.ma/discover/get-place?slug=${encodeURIComponent(slug)}`
+  );
+  const id = data?.place?.api_id;
+  if (typeof id === "string" && id) {
+    places[slug] = id;
+    return id;
   }
+  return null;
+}
+
+type LumaHost = { api_id?: string; name?: string; username?: string };
+type LumaEntry = {
+  event?: {
+    api_id?: string; name?: string; start_at?: string; end_at?: string;
+    url?: string; cover_url?: string; geo_address_info?: { city_state?: string; full_address?: string; city?: string };
+  };
+  hosts?: LumaHost[];
+  guest_count?: number;
+  cover_image?: { url?: string };
+};
+type LumaPage = { entries?: LumaEntry[]; has_more?: boolean; next_cursor?: string | null };
+
+/** Walk one city's events forward until the horizon or the pages run out. */
+async function fetchCity(slug: string, placeId: string, cityLabel: string, horizon: Date) {
+  const out: FounderEvent[] = [];
+  let cursor: string | null = null;
+
+  for (let page = 0; page < MAX_PAGES_PER_CITY; page++) {
+    const url: string =
+      `https://api.lu.ma/discover/get-paginated-events?discover_place_api_id=${encodeURIComponent(placeId)}` +
+      `&pagination_limit=${PAGE_SIZE}` +
+      (cursor ? `&pagination_cursor=${encodeURIComponent(cursor)}` : "");
+
+    const data: LumaPage | null = await politeJSON<LumaPage>(url);
+    if (!data?.entries?.length) break;
+
+    let pastHorizon = false;
+    for (const entry of data.entries) {
+      const ev = entry.event;
+      if (!ev?.api_id || !ev.name) continue;
+      const startsAt = ev.start_at ?? "";
+      if (startsAt && new Date(startsAt) > horizon) { pastHorizon = true; continue; }
+
+      const host = entry.hosts?.[0];
+      const geo = ev.geo_address_info ?? {};
+      const location = geo.city_state || geo.city || geo.full_address || cityLabel;
+      const title = ev.name;
+      const desc = "";
+      const sc = scoreLeadQuality(title, desc);
+
+      out.push({
+        id: `luma-${ev.api_id}`,
+        title,
+        description: desc,
+        date: startsAt,
+        endDate: ev.end_at || undefined,
+        location,
+        url: ev.url?.startsWith("http") ? ev.url : `https://luma.com/${ev.url ?? ev.api_id}`,
+        source: "luma",
+        category: categorizeEvent(title, desc),
+        imageUrl: ev.cover_url || entry.cover_image?.url || undefined,
+        leadScore: sc.score,
+        leadTier: sc.tier,
+        highLeverage: sc.highLeverage,
+        leverageReason: sc.leverageReason,
+        organizerName: host?.name,
+        organizerLumaId: host?.api_id,
+        organizerUsername: host?.username,
+      } as FounderEvent);
+    }
+
+    if (pastHorizon || !data.has_more || !data.next_cursor) break;
+    cursor = data.next_cursor ?? null;
+    await sleep(250 + Math.random() * 250);
+  }
+  return out;
 }
 
 export async function GET() {
+  const horizon = new Date();
+  horizon.setDate(horizon.getDate() + HORIZON_DAYS);
+
+  const places = loadPlaces();
   const existing = loadCache();
-  const seen = new Set(existing.map((e) => e.id));
-  let totalAdded = 0;
+  const byId = new Map(existing.map((e) => [e.id, e]));
   const cityResults: Record<string, number> = {};
 
-  // Process cities in batches of 3 with delays
-  for (let i = 0; i < CITIES.length; i += 3) {
-    const batch = CITIES.slice(i, i + 3);
-    const results = await Promise.allSettled(batch.map(scrapeLumaCity));
+  // Two cities at a time keeps us under Luma's rate limit.
+  for (let i = 0; i < CITIES.length; i += 2) {
+    const batch = CITIES.slice(i, i + 2);
+    if (i > 0) await sleep(500 + Math.random() * 500);
 
-    for (let j = 0; j < batch.length; j++) {
-      const r = results[j];
-      if (r.status !== "fulfilled") { cityResults[batch[j]] = 0; continue; }
-      let added = 0;
-      for (const raw of r.value) {
-        const externalId = `luma-${raw.id}`;
-        if (seen.has(externalId)) continue;
-        const title = raw.t || "";
-        const desc = raw.ds || "";
-        const sc = scoreLeadQuality(title, desc);
-        const url = raw.u?.startsWith("http") ? raw.u : `https://lu.ma/${raw.u}`;
-        existing.push({
-          id: externalId,
-          title,
-          description: desc,
-          date: raw.d || "",
-          endDate: raw.ed || undefined,
-          location: raw.c || "",
-          url,
-          source: "luma",
-          category: categorizeEvent(title, desc),
-          leadScore: sc.score,
-          leadTier: sc.tier,
-          highLeverage: sc.highLeverage,
-          leverageReason: sc.leverageReason,
-        });
-        seen.add(externalId);
-        added++;
-      }
-      cityResults[batch[j]] = added;
-      totalAdded += added;
+    const results = await Promise.allSettled(
+      batch.map(async (slug) => {
+        const placeId = await resolvePlaceId(slug, places);
+        if (!placeId) return { slug, events: [] as FounderEvent[] };
+        const label = slug.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
+        return { slug, events: await fetchCity(slug, placeId, label, horizon) };
+      })
+    );
+
+    for (const r of results) {
+      if (r.status !== "fulfilled") continue;
+      cityResults[r.value.slug] = r.value.events.length;
+      // Later sightings win, so organizer enrichment is not lost.
+      for (const e of r.value.events) byId.set(e.id, e);
     }
-
-    // Delay between batches to avoid rate limiting
-    if (i + 3 < CITIES.length) await new Promise((r) => setTimeout(r, 2000));
   }
 
-  saveCache(existing);
+  savePlaces(places);
+  const all = Array.from(byId.values());
+  saveCache(all);
 
   return NextResponse.json({
-    ok: true,
-    added: totalAdded,
-    total: existing.length,
+    events: all,
+    count: all.length,
     cities: cityResults,
+    horizon_days: HORIZON_DAYS,
     source: "luma-scrape",
-    events: existing,
   });
 }

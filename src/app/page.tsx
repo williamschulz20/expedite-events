@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { signIn, signOut } from "next-auth/react";
 import {
   format,
   parseISO,
@@ -131,6 +132,7 @@ const OTHER_SOURCES = new Set([
 ]);
 
 const KNOWN_CITIES = [
+  "Toronto", "Montreal", "Vancouver",
   "London", "Berlin", "Paris", "Amsterdam", "San Francisco",
   "Los Angeles", "New York", "Austin", "Boston",
   "Munich", "Barcelona", "Zurich", "Stockholm", "Helsinki",
@@ -157,6 +159,57 @@ function extractCity(location: string): string {
     if (loc.includes(city.toLowerCase())) return city;
   }
   return "Other";
+}
+
+// Country grouping for the top-level country filter.
+const COUNTRY_BY_CITY: Record<string, string> = {
+  "Toronto": "Canada", "Montreal": "Canada", "Vancouver": "Canada",
+  "London": "United Kingdom",
+  "Dublin": "Ireland",
+  "Berlin": "Germany", "Munich": "Germany", "Hamburg": "Germany",
+  "Paris": "France",
+  "Amsterdam": "Netherlands",
+  "San Francisco": "United States", "Los Angeles": "United States",
+  "New York": "United States", "Austin": "United States", "Boston": "United States",
+  "Barcelona": "Spain", "Madrid": "Spain",
+  "Zurich": "Switzerland", "Geneva": "Switzerland", "Lausanne": "Switzerland",
+  "Stockholm": "Sweden",
+  "Helsinki": "Finland",
+  "Lisbon": "Portugal",
+  "Copenhagen": "Denmark",
+  "Milan": "Italy", "Rome": "Italy",
+  "Istanbul": "Turkiye",
+  "Vienna": "Austria",
+  "Warsaw": "Poland",
+  "Brussels": "Belgium",
+  "Budapest": "Hungary",
+  "Prague": "Czechia",
+  "Tallinn": "Estonia",
+  "Riga": "Latvia",
+  "Vilnius": "Lithuania",
+  "Oslo": "Norway",
+};
+
+const REGION_BY_COUNTRY: Record<string, string> = {
+  "United States": "North America", "Canada": "North America",
+  "United Kingdom": "Europe", "Ireland": "Europe", "Germany": "Europe",
+  "France": "Europe", "Netherlands": "Europe", "Spain": "Europe",
+  "Portugal": "Europe", "Italy": "Europe", "Switzerland": "Europe",
+  "Austria": "Europe", "Belgium": "Europe", "Sweden": "Europe",
+  "Norway": "Europe", "Denmark": "Europe", "Finland": "Europe",
+  "Poland": "Europe", "Czechia": "Europe", "Hungary": "Europe",
+  "Estonia": "Europe", "Latvia": "Europe", "Lithuania": "Europe",
+  "Turkiye": "Europe", "Greece": "Europe", "Romania": "Europe",
+  "Bulgaria": "Europe", "Croatia": "Europe", "Slovenia": "Europe",
+  "Luxembourg": "Europe", "Iceland": "Europe",
+};
+
+function regionOfEvent(location: string): string {
+  return REGION_BY_COUNTRY[countryOfEvent(location)] ?? "Other";
+}
+
+function countryOfEvent(location: string): string {
+  return COUNTRY_BY_CITY[extractCity(location)] ?? "Other";
 }
 
 // Detect if event is free or paid from title/description
@@ -1753,7 +1806,7 @@ function CalendarSetupModal({ onDone }: { onDone: () => void }) {
             />
             <div>
               <p className="text-sm font-semibold text-gray-900">Google Calendar</p>
-              <p className="text-[11px] text-gray-400">Mark when you've subscribed</p>
+              <p className="text-[11px] text-gray-400">Mark when you&apos;ve subscribed</p>
             </div>
           </label>
           <label className="flex items-center gap-3 cursor-pointer rounded-xl border border-gray-200 px-4 py-3 hover:bg-gray-50 transition">
@@ -1765,7 +1818,7 @@ function CalendarSetupModal({ onDone }: { onDone: () => void }) {
             />
             <div>
               <p className="text-sm font-semibold text-gray-900">Apple Calendar</p>
-              <p className="text-[11px] text-gray-400">Mark when you've subscribed</p>
+              <p className="text-[11px] text-gray-400">Mark when you&apos;ve subscribed</p>
             </div>
           </label>
         </div>
@@ -1856,6 +1909,8 @@ export default function Home() {
   const [tierFilter,  setTierFilter]  = useState("All");
   const [source,      setSource]      = useState("All");
   const [city,        setCity]        = useState("All");
+  const [country,     setCountry]     = useState("All");
+  const [region,      setRegion]      = useState("All");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortByLead,  setSortByLead]  = useState(false);
   const [pricingFilter, setPricingFilter] = useState<"All" | "free" | "paid">("All");
@@ -1879,16 +1934,37 @@ export default function Home() {
   // Add event modal
   const [showAddEvent, setShowAddEvent] = useState(false);
 
-  // Load identity from localStorage
+  // Identity comes from the signed-in Google account. /api/me maps the session
+  // email onto a team_members row, creating it on first sign-in.
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const stored = localStorage.getItem("expedite_identity");
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored) as Identity;
-        setIdentity(parsed);
-      } catch { /* ignore */ }
-    }
+    let cancelled = false;
+    fetch("/api/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled) return;
+        if (!d?.member) {
+          // Google sign-in not configured yet: fall back to the local picker so
+          // the app still works before auth is set up.
+          const stored = typeof window !== "undefined"
+            ? localStorage.getItem("expedite_identity") : null;
+          if (stored) {
+            try { setIdentity(JSON.parse(stored) as Identity); } catch {}
+          } else {
+            setShowIdentityModal(true);
+          }
+          return;
+        }
+        const m = d.member;
+        setIdentity({
+          teamMemberId: m.id,
+          name: m.name,
+          initials: m.initials ?? (m.name ?? "?").slice(0, 1).toUpperCase(),
+          avatarColor: m.avatar_color ?? "#6366f1",
+          calendarSetupDone: Boolean(m.calendar_setup_done),
+        });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, []);
 
   // Load team members
@@ -1898,11 +1974,7 @@ export default function Home() {
       .then((d) => {
         const members: TeamMember[] = d.members ?? [];
         setTeamMembers(members);
-        // If no identity yet, show the modal once members are loaded
-        if (!identity && members.length > 0) {
-          const stored = localStorage.getItem("expedite_identity");
-          if (!stored) setShowIdentityModal(true);
-        }
+        // No identity picker any more: who you are comes from Google sign-in.
       })
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2072,9 +2144,32 @@ export default function Home() {
     }
   }, [identity]);
 
+  const availableRegions = useMemo(() => {
+    const counts = new Map<string, number>();
+    events.forEach((ev) => {
+      const r = regionOfEvent(ev.location);
+      if (r === "Other") return;
+      counts.set(r, (counts.get(r) ?? 0) + 1);
+    });
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  }, [events]);
+
+  const availableCountries = useMemo(() => {
+    const counts = new Map<string, number>();
+    events.forEach((ev) => {
+      if (region !== "All" && regionOfEvent(ev.location) !== region) return;
+      const c = countryOfEvent(ev.location);
+      if (c === "Other") return;
+      counts.set(c, (counts.get(c) ?? 0) + 1);
+    });
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  }, [events, region]);
+
   const availableCities = useMemo(() => {
     const counts = new Map<string, number>();
     events.forEach((ev) => {
+      if (region !== "All" && regionOfEvent(ev.location) !== region) return;
+      if (country !== "All" && countryOfEvent(ev.location) !== country) return;
       const c = extractCity(ev.location);
       counts.set(c, (counts.get(c) ?? 0) + 1);
     });
@@ -2082,7 +2177,7 @@ export default function Home() {
       .sort((a, b) => b[1] - a[1])
       .map(([c]) => c)
       .filter((c) => c !== "Other");
-  }, [events]);
+  }, [events, country, region]);
 
   const filteredEvents = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
@@ -2093,14 +2188,16 @@ export default function Home() {
         || (source === "Other" && OTHER_SOURCES.has(ev.source))
         || ev.source.toLowerCase() === source.toLowerCase();
       const cityOk = city       === "All" || extractCity(ev.location)  === city;
+      const countryOk = country === "All" || countryOfEvent(ev.location) === country;
+      const regionOk = region === "All" || regionOfEvent(ev.location) === region;
       const searchOk = !q || ev.title.toLowerCase().includes(q)
         || ev.description.toLowerCase().includes(q)
         || ev.location.toLowerCase().includes(q)
         || (ev.organizerName ?? "").toLowerCase().includes(q);
       const priceOk = pricingFilter === "All" || detectPricing(ev.title, ev.description) === pricingFilter;
-      return tierOk && catOk && srcOk && cityOk && searchOk && priceOk;
+      return tierOk && catOk && srcOk && cityOk && countryOk && regionOk && searchOk && priceOk;
     });
-  }, [events, activeTab, tierFilter, source, city, searchQuery, pricingFilter]);
+  }, [events, activeTab, tierFilter, source, city, country, region, searchQuery, pricingFilter]);
 
   const sortedEvents = useMemo(() => {
     const arr = [...filteredEvents];
@@ -2221,8 +2318,8 @@ export default function Home() {
             {/* Identity avatar */}
             {identity ? (
               <button
-                onClick={() => setShowIdentityModal(true)}
-                title={`Signed in as ${identity.name} — click to switch`}
+                onClick={() => signOut({ redirectTo: "/signin" })}
+                title={`Signed in as ${identity.name} — click to sign out`}
                 style={{ backgroundColor: identity.avatarColor }}
                 className="h-8 w-8 rounded-full flex items-center justify-center text-white font-bold text-xs ring-2 ring-white hover:ring-gray-300 transition shrink-0"
               >
@@ -2230,9 +2327,9 @@ export default function Home() {
               </button>
             ) : (
               <button
-                onClick={() => setShowIdentityModal(true)}
+                onClick={() => signIn("google")}
                 className="h-8 w-8 rounded-full border-2 border-dashed border-gray-300 flex items-center justify-center text-gray-400 hover:border-gray-400 transition text-xs"
-                title="Set your identity"
+                title="Sign in"
               >
                 ?
               </button>
@@ -2472,6 +2569,68 @@ export default function Home() {
               })}
             </div>
 
+            {/* Row: Region filter */}
+            {availableRegions.length > 1 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mr-1 shrink-0">Region</span>
+                <button
+                  onClick={() => { setRegion("All"); setCountry("All"); setCity("All"); }}
+                  className={`whitespace-nowrap rounded-full border px-3 py-1 text-[11px] font-semibold transition ${
+                    region === "All"
+                      ? "border-gray-900 bg-gray-900 text-white"
+                      : "border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-gray-700"
+                  }`}
+                >
+                  Everywhere
+                </button>
+                {availableRegions.map(([r, count]) => (
+                  <button
+                    key={r}
+                    onClick={() => { setRegion(r === region ? "All" : r); setCountry("All"); setCity("All"); }}
+                    className={`whitespace-nowrap rounded-full border px-3 py-1 text-[11px] font-semibold transition ${
+                      region === r
+                        ? "border-blue-600 bg-blue-600 text-white"
+                        : "border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-gray-700"
+                    }`}
+                  >
+                    {r}
+                    <span className="ml-1.5 tabular-nums opacity-60">{count}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Row: Country filter */}
+            {availableCountries.length > 0 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mr-1 shrink-0">Country</span>
+                <button
+                  onClick={() => { setCountry("All"); setCity("All"); }}
+                  className={`whitespace-nowrap rounded-full border px-3 py-1 text-[11px] font-semibold transition ${
+                    country === "All"
+                      ? "border-gray-900 bg-gray-900 text-white"
+                      : "border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-gray-700"
+                  }`}
+                >
+                  All countries
+                </button>
+                {availableCountries.map(([c, count]) => (
+                  <button
+                    key={c}
+                    onClick={() => { setCountry(c === country ? "All" : c); setCity("All"); }}
+                    className={`whitespace-nowrap rounded-full border px-3 py-1 text-[11px] font-semibold transition ${
+                      country === c
+                        ? "border-blue-600 bg-blue-600 text-white"
+                        : "border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-gray-700"
+                    }`}
+                  >
+                    {c}
+                    <span className="ml-1.5 tabular-nums opacity-60">{count}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* Row: City filter */}
             {availableCities.length > 0 && (
               <div className="flex items-center gap-1.5 flex-wrap">
@@ -2537,7 +2696,9 @@ export default function Home() {
             onEventClick={(ev) => setModalEvent(ev)}
           />
 
-        ) : view === "calendar" ? (
+        ) : (
+          <div className="flex flex-col gap-6">
+            {view === "calendar" && (
           <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
             <CalendarView
               events={filteredEvents}
@@ -2553,13 +2714,16 @@ export default function Home() {
             />
           </div>
 
-        ) : sortedEvents.length === 0 ? (
+            )}
+
+            {view === "list" && (
+              sortedEvents.length === 0 ? (
           <div className="py-24 text-center">
             <p className="text-sm font-medium text-gray-900">No events found</p>
             <p className="mt-1 text-xs text-gray-400">Try a different filter or refresh.</p>
           </div>
 
-        ) : (
+              ) : (
           <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
             <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3">
               <p className="text-xs font-medium text-gray-400">
@@ -2583,6 +2747,9 @@ export default function Home() {
                 />
               ))}
             </div>
+          </div>
+              )
+            )}
           </div>
         )}
       </main>

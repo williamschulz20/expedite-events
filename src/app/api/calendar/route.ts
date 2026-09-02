@@ -7,13 +7,12 @@ export const dynamic = "force-dynamic";
 // Subscribe in Apple Calendar via: webcal://your-domain/api/calendar
 export async function GET() {
   const { data: events } = await supabase
-    .schema("event_scraper")
     .from("scraped_events")
     .select("*")
     .not("accepted_at", "is", null)
     .order("starts_at", { ascending: true });
 
-  const rows = events ?? [];
+  const rows: Array<Record<string, any>> = events ?? []; // eslint-disable-line @typescript-eslint/no-explicit-any
 
   const vevents = rows.map((evt) => {
     const start = evt.starts_at ? formatICSDate(new Date(evt.starts_at)) : formatICSDate(new Date());
