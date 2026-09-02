@@ -1,0 +1,50 @@
+name: Daily event scrape
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC every day
+  workflow_dispatch: {}    # manual "Run workflow" button
+
+concurrency:
+  group: daily-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Start app
+        run: |
+          npm run dev -- --port 3100 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3100/api/team >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:3100/api/team >/dev/null || { echo "app failed to start"; exit 1; }
+
+      - name: Scrape all sources into the shared database
+        run: node scripts/scrape-all.mjs
+
+      - name: Deep Eventbrite year sweep
+        run: node scripts/eventbrite-year.mjs
+        continue-on-error: true   # rate limits from CI IPs are possible; the daily pass still ran
+
+      - name: Report totals
+        run: |
+          curl -s "$SUPABASE_URL/rest/v1/scraped_events?select=id&limit=1" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Prefer: count=exact" -o /dev/null -D - | grep -i content-range
