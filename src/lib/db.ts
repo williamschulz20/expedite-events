@@ -102,13 +102,16 @@ function migrate(d: DatabaseSync) {
   `);
 }
 
-// The five-person team the original app shipped with.
+// The Expedite team; ids stay deterministic (tm-<name>) across environments.
 const TEAM = [
-  { name: "William", initials: "W", color: "#6366f1", email: "william@expedite.now" },
-  { name: "Leeho",   initials: "L", color: "#ec4899", email: "" },
-  { name: "Quentin", initials: "Q", color: "#14b8a6", email: "" },
-  { name: "Lucas",   initials: "L", color: "#f59e0b", email: "" },
-  { name: "Tom",     initials: "T", color: "#8b5cf6", email: "" },
+  { name: "William", initials: "W",  color: "#6366f1", email: "william@expedite.now" },
+  { name: "Leeho",   initials: "L",  color: "#ec4899", email: "leeho@expedite.now" },
+  { name: "Tom",     initials: "T",  color: "#8b5cf6", email: "tom@expedite.now" },
+  { name: "Chanwoo", initials: "C",  color: "#14b8a6", email: "chanwoo@expedite.now" },
+  { name: "Quan",    initials: "Q",  color: "#f59e0b", email: "quan@expedite.now" },
+  { name: "Omar",    initials: "O",  color: "#0ea5e9", email: "omar@expedite.now" },
+  { name: "Sagar",   initials: "SA", color: "#22c55e", email: "sagar@expedite.now" },
+  { name: "Shams",   initials: "SH", color: "#ef4444", email: "shams@expedite.now" },
 ];
 
 function seedTeam(d: DatabaseSync) {

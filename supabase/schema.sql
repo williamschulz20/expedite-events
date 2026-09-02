@@ -102,11 +102,14 @@ create index if not exists idx_att_event on public.event_attendance (event_exter
 -- Edit the names/emails to match your actual team before running.
 -- ---------------------------------------------------------------------------
 insert into public.team_members (id, name, email, initials, avatar_color) values
-  ('tm-william', 'William', 'william@expedite.now', 'W', '#6366f1'),
-  ('tm-leeho',   'Leeho',   '',                     'L', '#ec4899'),
-  ('tm-quentin', 'Quentin', '',                     'Q', '#14b8a6'),
-  ('tm-lucas',   'Lucas',   '',                     'L', '#f59e0b'),
-  ('tm-tom',     'Tom',     '',                     'T', '#8b5cf6')
+  ('tm-william', 'William', 'william@expedite.now', 'W',  '#6366f1'),
+  ('tm-leeho',   'Leeho',   'leeho@expedite.now',   'L',  '#ec4899'),
+  ('tm-tom',     'Tom',     'tom@expedite.now',     'T',  '#8b5cf6'),
+  ('tm-chanwoo', 'Chanwoo', 'chanwoo@expedite.now', 'C',  '#14b8a6'),
+  ('tm-quan',    'Quan',    'quan@expedite.now',    'Q',  '#f59e0b'),
+  ('tm-omar',    'Omar',    'omar@expedite.now',    'O',  '#0ea5e9'),
+  ('tm-sagar',   'Sagar',   'sagar@expedite.now',   'SA', '#22c55e'),
+  ('tm-shams',   'Shams',   'shams@expedite.now',   'SH', '#ef4444')
 on conflict (id) do nothing;
 
 -- ---------------------------------------------------------------------------
