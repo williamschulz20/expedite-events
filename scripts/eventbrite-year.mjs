@@ -100,7 +100,7 @@ for (const [slug, label, domain] of CITIES) {
       for (let attempt = 0; attempt < 3; attempt++) {
         const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "text/html" }, signal: AbortSignal.timeout(25000) }).catch(() => null);
         if (res?.status === 429) { blocked++; await sleep(10000 * (attempt + 1)); continue; }
-        if (res?.ok) html = await res.text();
+        if (res?.ok) html = await res.text().catch(() => "");
         break;
       }
       if (html) {

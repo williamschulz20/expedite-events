@@ -12,3 +12,9 @@ if ! curl -sf -o /dev/null "http://localhost:$PORT/api/team"; then
   exit 1
 fi
 BASE_URL="http://localhost:$PORT" node scripts/scrape-all.mjs "${@:2}"
+
+# Deep Eventbrite pass: month-by-month for the next 12 months. Slow (~1h) but
+# it is what fills the far end of the calendar. Skip with SKIP_YEAR_SWEEP=1.
+if [ -z "$SKIP_YEAR_SWEEP" ] && [ $# -le 1 ]; then
+  BASE_URL="http://localhost:$PORT" node scripts/eventbrite-year.mjs
+fi
