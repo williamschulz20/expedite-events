@@ -1924,6 +1924,7 @@ export default function Home() {
   const [city,        setCity]        = useState("All");
   const [country,     setCountry]     = useState("All");
   const [region,      setRegion]      = useState("All");
+  const [timeFrame,   setTimeFrame]   = useState<"upcoming" | "past">("upcoming");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortByLead,  setSortByLead]  = useState(false);
   const [pricingFilter, setPricingFilter] = useState<"All" | "free" | "paid">("All");
@@ -2005,7 +2006,7 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      const res  = await fetch("/api/events");
+      const res  = await fetch(timeFrame === "past" ? "/api/events?past=true" : "/api/events");
       if (!res.ok) throw new Error(`${res.status}`);
       const data = await res.json();
       setEvents(data.events ?? []);
@@ -2014,7 +2015,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [timeFrame]);
 
   const rsvpFiltered = useCallback(async (eventIds: string[]) => {
     if (eventIds.length === 0) return;
@@ -2576,6 +2577,24 @@ export default function Home() {
                   </button>
                 );
               })}
+            </div>
+
+            {/* Row: Upcoming vs history */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mr-1 shrink-0">Time</span>
+              {(["upcoming", "past"] as const).map((tf) => (
+                <button
+                  key={tf}
+                  onClick={() => setTimeFrame(tf)}
+                  className={`whitespace-nowrap rounded-full border px-3 py-1 text-[11px] font-semibold transition ${
+                    timeFrame === tf
+                      ? "border-gray-900 bg-gray-900 text-white"
+                      : "border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-gray-700"
+                  }`}
+                >
+                  {tf === "upcoming" ? "Upcoming" : "Past (archive)"}
+                </button>
+              ))}
             </div>
 
             {/* Row: Region filter */}

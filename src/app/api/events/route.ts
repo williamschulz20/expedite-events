@@ -76,6 +76,25 @@ export async function GET(request: Request) {
   const baseUrl = new URL(request.url).origin;
   const refresh = new URL(request.url).searchParams.get("refresh") === "true";
 
+  // History mode: everything that already happened stays queryable forever.
+  // Rows are never deleted; this is the read path for the archive.
+  if (new URL(request.url).searchParams.get("past") === "true") {
+    const past: Record<string, unknown>[] = [];
+    for (let page = 0; page < 10; page++) {
+      const { data: batch } = await supabase
+        .from("scraped_events")
+        .select("*")
+        .lt("starts_at", new Date().toISOString())
+        .order("starts_at", { ascending: false })
+        .range(page * 1000, page * 1000 + 999);
+      if (!batch || batch.length === 0) break;
+      past.push(...batch);
+      if (batch.length < 1000) break;
+    }
+    const events = dedup(past.map(rowToEvent));
+    return NextResponse.json({ events, total: events.length, source: "supabase-history" });
+  }
+
   // STEP 1: Try Supabase cache first (includes accepted/attended state)
   if (!refresh) {
     try {

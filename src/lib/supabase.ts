@@ -15,7 +15,7 @@ import { db, BOOLEAN_COLUMNS } from "./db";
 // `any` mirrors supabase-js, whose responses are untyped at the call sites.
 type Row = Record<string, any>;
 type Filter =
-  | { kind: "cmp"; col: string; op: "=" | ">=" | "<="; value: unknown }
+  | { kind: "cmp"; col: string; op: "=" | ">=" | "<=" | "<"; value: unknown }
   | { kind: "notNull"; col: string }
   | { kind: "raw"; sql: string };
 
@@ -80,6 +80,10 @@ class Query<T = any[]> implements PromiseLike<Result<T>> {
   }
   gte(col: string, value: unknown) {
     this.filters.push({ kind: "cmp", col, op: ">=", value });
+    return this;
+  }
+  lt(col: string, value: unknown) {
+    this.filters.push({ kind: "cmp", col, op: "<", value });
     return this;
   }
   lte(col: string, value: unknown) {
