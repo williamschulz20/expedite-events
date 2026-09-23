@@ -25,6 +25,11 @@ export interface FounderEvent {
   // Acceptance / attendance tracking
   acceptedAt?: string;
   attendedAt?: string;
+  // Attribution: what going there cost and how it went. See
+  // supabase/attribution.sql for where these live.
+  cost?: number;
+  currency?: string;
+  debriefNotes?: string;
 }
 
 // ---------------------------------------------------------------------------

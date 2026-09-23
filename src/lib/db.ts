@@ -20,6 +20,7 @@ export function db(): DatabaseSync {
   _db.exec("PRAGMA journal_mode = WAL;");
   _db.exec("PRAGMA foreign_keys = ON;");
   migrate(_db);
+  addMissingColumns(_db);
   seedTeam(_db);
   return _db;
 }
@@ -90,6 +91,32 @@ function migrate(d: DatabaseSync) {
       created_at           TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS captured_leads (
+      id                TEXT PRIMARY KEY,
+      event_external_id TEXT NOT NULL,
+      name              TEXT NOT NULL,
+      title             TEXT,
+      company           TEXT,
+      linkedin_url      TEXT,
+      email             TEXT,
+      lead_quality      TEXT,
+      notes             TEXT,
+      captured_by       TEXT,
+      captured_at       TEXT,
+      gtm_person_id     TEXT,
+      gtm_deal_id       TEXT,
+      gtm_deal_name     TEXT,
+      gtm_deal_stage    TEXT,
+      gtm_deal_amount   REAL,
+      gtm_deal_currency TEXT,
+      gtm_synced_at     TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_leads_event   ON captured_leads(event_external_id);
+    CREATE INDEX IF NOT EXISTS idx_leads_quality ON captured_leads(lead_quality);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_leads_event_linkedin
+      ON captured_leads(event_external_id, linkedin_url)
+      WHERE linkedin_url IS NOT NULL;
+
     CREATE TABLE IF NOT EXISTS event_attendance (
       id                 TEXT PRIMARY KEY,
       event_external_id  TEXT NOT NULL,
@@ -100,6 +127,31 @@ function migrate(d: DatabaseSync) {
     );
     CREATE INDEX IF NOT EXISTS idx_att_event ON event_attendance(event_external_id);
   `);
+}
+
+// Columns added to scraped_events after the table first shipped. SQLite has no
+// ADD COLUMN IF NOT EXISTS, so each one is checked against the live table
+// first. Keep in step with supabase/attribution.sql.
+const ADDED_EVENT_COLUMNS: Array<[string, string]> = [
+  ["cost", "REAL"],
+  ["currency", "TEXT"],
+  ["debrief_notes", "TEXT"],
+  ["debriefed_at", "TEXT"],
+  ["debriefed_by", "TEXT"],
+  ["gtm_event_id", "TEXT"],
+];
+
+function addMissingColumns(d: DatabaseSync) {
+  const existing = new Set(
+    (d.prepare("PRAGMA table_info(scraped_events)").all() as { name: string }[]).map(
+      (c) => c.name
+    )
+  );
+  for (const [name, type] of ADDED_EVENT_COLUMNS) {
+    if (!existing.has(name)) {
+      d.exec(`ALTER TABLE scraped_events ADD COLUMN ${name} ${type}`);
+    }
+  }
 }
 
 // The Expedite team; ids stay deterministic (tm-<name>) across environments.

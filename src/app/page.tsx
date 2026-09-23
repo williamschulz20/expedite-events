@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { LeadsPanel } from "@/components/LeadsPanel";
+import { DebriefPanel } from "@/components/DebriefPanel";
+import { tallyLeads, type LeadTally } from "@/lib/leads";
 import { signIn, signOut } from "next-auth/react";
 import {
   format,
@@ -47,6 +50,9 @@ interface FounderEvent {
   organizerLumaId?: string;
   organizerLinkedin?: string;
   organizerUsername?: string;
+  cost?: number;
+  currency?: string;
+  debriefNotes?: string;
 }
 
 interface TeamMember {
@@ -689,6 +695,9 @@ function EventDetailModal({
   const tier      = event.leadTier ?? "cold";
   const ts        = TIER_STYLES[tier];
   const isPast    = new Date(event.date) < new Date();
+  // The leads list owns the rows; it publishes the derived counts the debrief
+  // needs, so the same data is never fetched twice.
+  const [leadTally, setLeadTally] = useState<LeadTally>(() => tallyLeads([]));
   const isAccepted = !!event.acceptedAt;
   const isAttended = !!event.attendedAt;
 
@@ -928,6 +937,29 @@ function EventDetailModal({
               >
                 ✓ Mark Attended
               </button>
+            )}
+          </div>
+
+          {/* Attribution. Always shown, not gated on "attended": the record is
+              most often written before anyone remembers to tick that box, and
+              hiding it behind a flag is how events end up with nothing. */}
+          <div className="space-y-3 border-t border-gray-100 pt-4">
+            <LeadsPanel
+              eventExternalId={event.id}
+              capturedBy={currentIdentity?.teamMemberId ?? null}
+              onTallyChange={setLeadTally}
+            />
+            {event.dbId && (
+              <DebriefPanel
+                dbId={event.dbId}
+                initialCost={event.cost ?? null}
+                initialCurrency={event.currency ?? null}
+                initialNotes={event.debriefNotes ?? null}
+                attended={isAttended}
+                hotCount={leadTally.hot}
+                totalLeads={leadTally.total}
+                debriefedBy={currentIdentity?.teamMemberId ?? null}
+              />
             )}
           </div>
         </div>
