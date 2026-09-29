@@ -14,7 +14,9 @@ function isPublic(pathname: string) {
   return (
     pathname.startsWith("/signin") ||
     pathname.startsWith("/api/auth") ||
-    pathname.startsWith("/api/calendar")
+    pathname.startsWith("/api/calendar") ||
+    // Bearer-token gated inside the route; GTM's backend has no session.
+    pathname === "/api/feed"
   );
 }
 
