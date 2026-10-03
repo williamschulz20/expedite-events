@@ -135,7 +135,9 @@ async function fetchEventbritePage(
     const url = `https://www.${domain}/d/${citySlug}/${encodeURIComponent(query)}/?page=${page}`;
 
     const html = await politeText(url);
-    if (!html) return events;
+    // Empty after politeText's retries means Eventbrite refused us (almost
+    // always 429). Throw so the sweep can tell "blocked" from "no results".
+    if (!html) throw new Error("blocked");
 
     // Eventbrite inlines __SERVER_DATA__ and __REACT_QUERY_STATE__ in the SAME
     // <script> tag. A lazy regex anchored on </script> runs straight through the
@@ -227,7 +229,10 @@ async function fetchEventbritePage(
         }
       } catch { /* skip malformed block */ }
     }
-  } catch { /* query failed */ }
+  } catch (err) {
+    // A refusal must reach the sweep so it can stop; parse errors stay quiet.
+    if (err instanceof Error && err.message === "blocked") throw err;
+  }
 
   return events;
 }
@@ -290,20 +295,29 @@ export async function GET(request: Request) {
     // All three lists are ordered best-first, so slicing keeps the strongest
     // markets and the highest-signal terms.
     const sp = new URL(request.url).searchParams;
-    const maxPages = Math.max(1, Math.min(5, Number(sp.get("pages")) || 2));
-    const maxQueries = Math.max(1, Math.min(SEARCH_QUERIES.length, Number(sp.get("queries")) || 14));
+    const maxPages = Math.max(1, Math.min(5, Number(sp.get("pages")) || 1));
+    const maxQueries = Math.max(1, Math.min(SEARCH_QUERIES.length, Number(sp.get("queries")) || 6));
     // ?cities=N bounds the city sweep for smoke tests. Default is every city,
     // so this changes no existing behaviour.
     const maxCities = Math.max(1, Math.min(CITIES.length, Number(sp.get("cities")) || CITIES.length));
+    // ?cityStart=N with ?cities=M takes M cities from position N, so a runner
+    // can walk the list in batches that each finish well inside a request
+    // timeout. The whole list in one call takes over 15 minutes.
+    const cityStart = Math.max(0, Math.min(CITIES.length - 1, Number(sp.get("cityStart")) || 0));
     const queries = SEARCH_QUERIES.slice(0, maxQueries);
     const pages = PAGES_PER_QUERY.slice(0, maxPages);
-    const cities = CITIES.slice(0, maxCities);
+    const cities = CITIES.slice(cityStart, cityStart + maxCities);
 
     const allEvents: FounderEvent[] = [];
+    // Eventbrite rate-limits hard. Two pages in flight with a second or so
+    // between waves, and stop the sweep once a run of requests is refused:
+    // pressing on only extends the block and returns nothing anyway.
+    const MAX_CONSECUTIVE_BLOCKS = 6;
+    let consecutiveBlocks = 0;
+    let rateLimited = false;
+    let pagesFetched = 0;
 
-    // For each city, run all queries across all pages in parallel batches
-    // Batch size of 8 to avoid hammering Eventbrite
-    for (const city of cities) {
+    sweep: for (const city of cities) {
       const tasks: Array<() => Promise<FounderEvent[]>> = [];
       for (const query of queries) {
         for (const page of pages) {
@@ -311,13 +325,18 @@ export async function GET(request: Request) {
         }
       }
 
-      // Run in batches of 8 concurrent requests
-      for (let i = 0; i < tasks.length; i += 4) {
-        const batch = tasks.slice(i, i + 4).map((t) => t());
-        if (i > 0) await sleep(300 + Math.random() * 300);
-        const results = await Promise.allSettled(batch);
+      for (let i = 0; i < tasks.length; i += 2) {
+        if (i > 0) await sleep(900 + Math.random() * 700);
+        const results = await Promise.allSettled(tasks.slice(i, i + 2).map((t) => t()));
         for (const r of results) {
-          if (r.status === "fulfilled") allEvents.push(...r.value);
+          if (r.status === "fulfilled") {
+            allEvents.push(...r.value);
+            pagesFetched++;
+            consecutiveBlocks = 0;
+          } else if (++consecutiveBlocks >= MAX_CONSECUTIVE_BLOCKS) {
+            rateLimited = true;
+            break sweep;
+          }
         }
       }
     }
@@ -342,6 +361,9 @@ export async function GET(request: Request) {
       queries_used: queries.length,
       queries_configured: SEARCH_QUERIES.length,
       pages_per_query: pages.length,
+      pages_fetched: pagesFetched,
+      // True when the sweep stopped early because Eventbrite kept refusing.
+      rate_limited: rateLimited,
     });
   } catch (error) {
     console.error("Eventbrite error:", error);

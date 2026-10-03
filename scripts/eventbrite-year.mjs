@@ -90,29 +90,60 @@ for (let k = 1; k <= 12; k++) {
   months.push([f(d), f(e)]);
 }
 
-let stored = 0, fetched = 0, blocked = 0;
-for (const [slug, label, domain] of CITIES) {
-  const batch = [];
+// The full 18 cities x 12 months x 6 queries is ~1,300 requests. CI IPs are
+// throttled hard, and the old loop spent its whole 40 minutes retrying 429s
+// without finishing one city. So: two cities a day in rotation (a full lap
+// every nine days), a time budget, and stop as soon as Eventbrite starts
+// refusing. Whatever was fetched is ingested month by month, never lost.
+const CITIES_PER_RUN = Number(process.env.EB_CITIES_PER_RUN ?? 2);
+const BUDGET_MS = Number(process.env.EB_BUDGET_MS ?? 25 * 60_000);
+const MAX_CONSECUTIVE_BLOCKS = 4;
+const dayOfYear = Math.floor((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 0)) / 86_400_000);
+const first = (dayOfYear * CITIES_PER_RUN) % CITIES.length;
+const todays = Array.from({ length: CITIES_PER_RUN }, (_, k) => CITIES[(first + k) % CITIES.length]);
+const deadline = Date.now() + BUDGET_MS;
+const startedAt = Date.now();
+
+let stored = 0, fetched = 0, blocked = 0, consecutive = 0, stopped = "";
+outer: for (const [slug, label, domain] of todays) {
   for (const [from, to] of months) {
+    const batch = [];
     for (const q of QUERIES) {
+      if (Date.now() > deadline) { stopped = "time budget reached"; break outer; }
       const url = `https://www.${domain}/d/${slug}/${q}/?start_date=${from}&end_date=${to}`;
-      let html = "";
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "text/html" }, signal: AbortSignal.timeout(25000) }).catch(() => null);
-        if (res?.status === 429) { blocked++; await sleep(10000 * (attempt + 1)); continue; }
-        if (res?.ok) html = await res.text().catch(() => "");
-        break;
+      const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "text/html" }, signal: AbortSignal.timeout(25000) }).catch(() => null);
+      if (!res || res.status === 429 || res.status >= 500) {
+        blocked++;
+        if (++consecutive >= MAX_CONSECUTIVE_BLOCKS) { stopped = "Eventbrite is refusing requests"; break outer; }
+        await sleep(5000);
+        continue;
       }
+      consecutive = 0;
+      const html = res.ok ? await res.text().catch(() => "") : "";
       if (html) {
         const evs = mapEvents(extractServerData(html), label);
         fetched += evs.length;
         batch.push(...evs);
       }
-      await sleep(700 + Math.random() * 600);
+      await sleep(1200 + Math.random() * 800);
     }
+    stored += await ingest(batch);
   }
-  const n = await ingest(batch);
-  stored += n;
-  console.log(`${label.padEnd(14)} fetched=${String(batch.length).padStart(5)} stored=${String(n).padStart(5)} (429s so far: ${blocked})`);
+  console.log(`${label.padEnd(14)} done (fetched so far ${fetched}, saved ${stored}, refused ${blocked})`);
 }
-console.log(`\nTOTAL fetched=${fetched} stored=${stored}`);
+if (stopped) console.log(`stopped early: ${stopped}`);
+console.log(`\nTOTAL fetched=${fetched} saved=${stored} cities=${todays.map((c) => c[1]).join(", ")}`);
+
+await fetch(`${BASE}/api/source-runs`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    runId: process.env.GITHUB_RUN_ID ?? `local-${new Date().toISOString()}`,
+    source: "eventbrite-deep",
+    ok: fetched > 0,
+    scraped: fetched,
+    saved: stored,
+    error: fetched > 0 ? (stopped || null) : (stopped || "returned no events"),
+    durationMs: Date.now() - startedAt,
+  }),
+}).catch(() => {});

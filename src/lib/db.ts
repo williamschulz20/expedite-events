@@ -20,6 +20,7 @@ export function db(): DatabaseSync {
   _db.exec("PRAGMA journal_mode = WAL;");
   _db.exec("PRAGMA foreign_keys = ON;");
   migrate(_db);
+  addMissingColumns(_db);
   seedTeam(_db);
   return _db;
 }
@@ -28,6 +29,8 @@ export function db(): DatabaseSync {
 export const BOOLEAN_COLUMNS = new Set([
   "high_leverage",
   "calendar_setup_done",
+  "sellers_heavy",
+  "ok",
 ]);
 
 function migrate(d: DatabaseSync) {
@@ -90,6 +93,32 @@ function migrate(d: DatabaseSync) {
       created_at           TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS captured_leads (
+      id                TEXT PRIMARY KEY,
+      event_external_id TEXT NOT NULL,
+      name              TEXT NOT NULL,
+      title             TEXT,
+      company           TEXT,
+      linkedin_url      TEXT,
+      email             TEXT,
+      lead_quality      TEXT,
+      notes             TEXT,
+      captured_by       TEXT,
+      captured_at       TEXT,
+      gtm_person_id     TEXT,
+      gtm_deal_id       TEXT,
+      gtm_deal_name     TEXT,
+      gtm_deal_stage    TEXT,
+      gtm_deal_amount   REAL,
+      gtm_deal_currency TEXT,
+      gtm_synced_at     TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_leads_event   ON captured_leads(event_external_id);
+    CREATE INDEX IF NOT EXISTS idx_leads_quality ON captured_leads(lead_quality);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_leads_event_linkedin
+      ON captured_leads(event_external_id, linkedin_url)
+      WHERE linkedin_url IS NOT NULL;
+
     CREATE TABLE IF NOT EXISTS event_attendance (
       id                 TEXT PRIMARY KEY,
       event_external_id  TEXT NOT NULL,
@@ -99,7 +128,64 @@ function migrate(d: DatabaseSync) {
       UNIQUE (event_external_id, team_member_id)
     );
     CREATE INDEX IF NOT EXISTS idx_att_event ON event_attendance(event_external_id);
+
+    -- Mirrors supabase/radar-v2.sql.
+    CREATE TABLE IF NOT EXISTS event_grades (
+      id                 TEXT PRIMARY KEY,
+      event_external_id  TEXT NOT NULL,
+      team_member_id     TEXT NOT NULL,
+      founder_density    TEXT NOT NULL,
+      visa_fit           INTEGER NOT NULL DEFAULT 0,
+      sellers_heavy      INTEGER NOT NULL DEFAULT 0,
+      verdict            TEXT NOT NULL,
+      notes              TEXT,
+      score              INTEGER NOT NULL,
+      series_key         TEXT,
+      organizer_key      TEXT,
+      created_at         TEXT,
+      updated_at         TEXT,
+      UNIQUE (event_external_id, team_member_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_grades_event ON event_grades(event_external_id);
+
+    CREATE TABLE IF NOT EXISTS source_runs (
+      id           TEXT PRIMARY KEY,
+      run_id       TEXT NOT NULL,
+      source       TEXT NOT NULL,
+      ok           INTEGER NOT NULL,
+      scraped      INTEGER NOT NULL DEFAULT 0,
+      saved        INTEGER NOT NULL DEFAULT 0,
+      error        TEXT,
+      duration_ms  INTEGER,
+      finished_at  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_source_runs_source ON source_runs(source, finished_at);
   `);
+}
+
+// Columns added to scraped_events after the table first shipped. SQLite has no
+// ADD COLUMN IF NOT EXISTS, so each one is checked against the live table
+// first. Keep in step with supabase/attribution.sql.
+const ADDED_EVENT_COLUMNS: Array<[string, string]> = [
+  ["cost", "REAL"],
+  ["currency", "TEXT"],
+  ["debrief_notes", "TEXT"],
+  ["debriefed_at", "TEXT"],
+  ["debriefed_by", "TEXT"],
+  ["gtm_event_id", "TEXT"],
+];
+
+function addMissingColumns(d: DatabaseSync) {
+  const existing = new Set(
+    (d.prepare("PRAGMA table_info(scraped_events)").all() as { name: string }[]).map(
+      (c) => c.name
+    )
+  );
+  for (const [name, type] of ADDED_EVENT_COLUMNS) {
+    if (!existing.has(name)) {
+      d.exec(`ALTER TABLE scraped_events ADD COLUMN ${name} ${type}`);
+    }
+  }
 }
 
 // The Expedite team; ids stay deterministic (tm-<name>) across environments.

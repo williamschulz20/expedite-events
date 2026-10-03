@@ -35,16 +35,22 @@ jobs:
           done
           curl -sf http://localhost:3100/api/team >/dev/null || { echo "app failed to start"; exit 1; }
 
+      # Exits non-zero when a core source fails or returns nothing, but the
+      # later steps still run (if: always()) so one dead feed never costs the
+      # rest of the day's data. The job ends red, which is the point.
       - name: Scrape all sources into the shared database
+        id: scrape
         run: node scripts/scrape-all.mjs
         timeout-minutes: 60
 
-      - name: Deep Eventbrite year sweep
+      - name: Deep Eventbrite year sweep (two cities per day, rotating)
+        if: always()
         run: node scripts/eventbrite-year.mjs
-        timeout-minutes: 40       # CI IPs are heavily throttled; cap it so the job concludes
-        continue-on-error: true   # whatever it stored before the cap is kept; the daily pass already ran
+        timeout-minutes: 30
+        continue-on-error: true   # best effort: Eventbrite throttles CI IPs; the script stops itself when refused
 
       - name: Report totals
+        if: always()
         run: |
           curl -s "$SUPABASE_URL/rest/v1/scraped_events?select=id&limit=1" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \

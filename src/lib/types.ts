@@ -25,6 +25,11 @@ export interface FounderEvent {
   // Acceptance / attendance tracking
   acceptedAt?: string;
   attendedAt?: string;
+  // Attribution: what going there cost and how it went. See
+  // supabase/attribution.sql for where these live.
+  cost?: number;
+  currency?: string;
+  debriefNotes?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +74,8 @@ const BLOCKLIST_KEYWORDS: string[] = [
   "cocktail making", "mixology", "cheese tasting", "coffee tasting",
   "tea tasting", "taco", "pizza making", "sushi making", "chocolate",
   "vegan cooking", "recipe", "bottomless brunch", "bottomless ramen",
+  "food & wine", "food and wine", "wine festival", "food festival", "beer festival",
+  "chef demo", "bbq festival",
   // Film / theater / performance
   "film screening", "movie night", "cinema", "film festival", "short film",
   "theater", "theatre", "comedy show", "stand-up comedy", "improv",
@@ -164,11 +171,10 @@ const HOT_CRITERIA: Array<{ score: number; reason: string; keywords: string[] }>
     reason: "US expansion / immigration event — founders thinking about the US right now",
     keywords: [
       "us expansion", "u.s expansion", "u.s. expansion", "us market", "expanding to us", "go to market us",
-      "silicon valley", "bay area founder",
+      "bay area founder",
       "transatlantic", "us launch", "american market", "us fundraising",
       "global ambition", "international expansion",
-      "relocation", "moving to us", "o-1a", "o1a", "visa",
-      "immigration", "work permit", "global talent",
+      "moving to us", "o-1a", "o1a",
     ],
   },
   {
@@ -210,6 +216,29 @@ const HOT_CRITERIA: Array<{ score: number; reason: string; keywords: string[] }>
       "international founder", "founder summit", "global founder summit",
       "european founder summit", "founder conference", "founders conference",
       "startup summit", "startup festival",
+    ],
+  },
+];
+
+// ---------------------------------------------------------------------------
+// WARM - visa / relocation talk (70). Generic visa words used to score 92, but
+// the rooms they describe are as often visa SELLERS (EU Blue Card programmes,
+// relocation agencies) as founders who need one. The context layer in
+// src/lib/radar.ts knocks the sellers down; this keeps the rest warm.
+// ---------------------------------------------------------------------------
+const WARM_VISA_CRITERIA: Array<{ score: number; reason: string; keywords: string[] }> = [
+  {
+    score: 70,
+    reason: "Visa / relocation topic: founders weighing a move, or people selling one",
+    keywords: ["visa", "immigration", "work permit", "global talent", "relocation", "silicon valley"],
+  },
+  {
+    score: 66,
+    reason: "Co-founder matching: everyone in the room is a founder or about to be",
+    keywords: [
+      "co-founder matching", "cofounder matching", "co-founder match", "cofounder match",
+      "find a co-founder", "find a cofounder", "co-founder speed", "cofounder speed",
+      "co-founder meetup", "cofounder meetup",
     ],
   },
 ];
@@ -450,6 +479,7 @@ export function scoreLeadQuality(title: string, description: string): LeadScore 
   // Check all criteria groups
   const allCriteria = [
     ...HOT_CRITERIA,
+    ...WARM_VISA_CRITERIA,
     ...WARM_VC_CRITERIA,
     ...WARM_FOUNDER_CRITERIA,
     ...COLD_CRITERIA,
@@ -507,7 +537,7 @@ export function scoreLeadQuality(title: string, description: string): LeadScore 
   // High leverage: hot tier OR explicit immigration/US-expansion signal
   const highLeverageKeywords = [
     "demo day", "demo night", "pitch competition", "pitch night",
-    "us expansion", "us market", "silicon valley",
+    "us expansion", "us market",
     "techstars", "antler", "y combinator",
     "entrepreneur first", "investor pitch", "fundraising",
     "founder breakfast", "founder dinner", "ceo breakfast", "ceo dinner",
