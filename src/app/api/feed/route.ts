@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { supabase } from "@/lib/supabase";
+import { prepareRows } from "@/lib/server/events";
 
 export const dynamic = "force-dynamic";
 
@@ -77,7 +78,7 @@ export async function GET(request: Request) {
   for (let page = 0; page < 10; page++) {
     const { data: batch, error } = await supabase
       .from("scraped_events")
-      .select("external_id,title,starts_at,ends_at,location,url,source,lead_tier,lead_score,high_leverage,accepted_at,attended_at")
+      .select("*")
       .gte("starts_at", from.toISOString())
       .lt("starts_at", to.toISOString())
       .order("starts_at", { ascending: true })
@@ -91,32 +92,29 @@ export async function GET(request: Request) {
     if (batch.length < 1000) break;
   }
 
-  // The scrapers can land one event under several ids; keep the first per
-  // title and day so the GTM calendar does not show duplicates.
-  const seen = new Set<string>();
-  const events: FeedEvent[] = [];
-  for (const row of rows) {
-    const tier = ((row.lead_tier as string) ?? "cold") as Tier;
-    if (!tiers.has(tier)) continue;
-    const startsAt = row.starts_at as string;
-    const key = `${String(row.title).trim().toLowerCase()}|${startsAt.slice(0, 10)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    events.push({
-      id: row.external_id as string,
-      title: row.title as string,
-      startsAt,
-      endsAt: (row.ends_at as string) ?? null,
-      location: (row.location as string) ?? null,
-      url: (row.url as string) ?? null,
-      source: (row.source as string) ?? null,
-      leadTier: tier,
-      leadScore: (row.lead_score as number) ?? null,
-      highLeverage: Boolean(row.high_leverage),
-      accepted: Boolean(row.accepted_at),
-      attended: Boolean(row.attended_at),
-    });
-  }
+  // Same cleaning and scoring as the app: duplicates collapsed, sellers and
+  // touring seminars marked down, team grades applied. Upcoming events no
+  // scraper has seen recently are left out; past ones are kept.
+  const now = Date.now();
+  const prepared = await prepareRows(rows, { past: false, includeStale: true });
+  const events: FeedEvent[] = prepared
+    .filter((e) => !(e.stale && Date.parse(e.date) > now))
+    .filter((e) => tiers.has((e.leadTier ?? "cold") as Tier))
+    .map((e) => ({
+      id: e.id,
+      title: e.title,
+      startsAt: e.date,
+      endsAt: e.endDate ?? null,
+      location: e.location || null,
+      url: e.url || null,
+      source: e.source || null,
+      leadTier: (e.leadTier ?? "cold") as Tier,
+      leadScore: e.leadScore ?? null,
+      highLeverage: Boolean(e.highLeverage),
+      accepted: Boolean(e.acceptedAt),
+      attended: Boolean(e.attendedAt),
+    }))
+    .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
 
   return NextResponse.json(
     { version: FEED_VERSION, generatedAt: new Date().toISOString(), events },

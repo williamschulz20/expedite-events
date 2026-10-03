@@ -156,6 +156,22 @@ An event is flagged as "high leverage" (⚡) if:
 
 ---
 
+## Scoring Context, Grading and Source Health (Oct 2026)
+
+**Read-time scoring.** `src/lib/radar.ts` re-scores every event when it is read, on top of the keyword score above:
+- Visa/relocation *sellers* (EU Blue Card programmes, golden visas, relocation agencies): -40.
+- Paid seminar formats (masterclass, "strategy session", bootcamp) in hotels or expo centres, or with an ALL-CAPS title: -30; seminar format elsewhere: -12.
+- The same generic "networking / pitch night" title in 3+ cities (a commercial tour): -25. Community franchises (DevOpsDays, Startup Weekend, Startup Grind…) are exempt.
+- Generic "visa", "immigration", "silicon valley" no longer score 92 on their own (now 70, warm). Co-founder matching is warm (66).
+- Duplicates (same normalised title and day) collapse to the richest listing. Events with no start time show "Time TBC". Upcoming events no scraper has seen for 10+ days are hidden behind "Show N unverified".
+- Every event shows "Why this score" with each adjustment.
+
+**Grading.** After an event, open it (or use the purple "You went to…" prompt) and answer four questions: founders in the room, O-1A-looking people, mostly sellers?, go again? That becomes a 0-100 grade (A-F, `src/lib/grade.ts`). Grades feed back: the next edition of the same series, or the next event by the same organizer, moves up to ±20 points. Saving a grade also marks you as having attended.
+
+**Source health.** `scripts/scrape-all.mjs` records each source's result in `source_runs`; the banner at the top of the app shows any source not updating, and the GitHub Action now fails (red) when a core source (Luma, Eventbrite, Meetup, Gary's Guide, dev.events) fails or returns nothing. TenTimes, F6S, Google search and University are no longer scheduled: the first two sit behind bot challenges (F6S's robots.txt also disallows scraping) and the search engines return nothing to scripts. Eventbrite runs in batches of six cities, gently, and stops as soon as it is refused; the deep year-ahead sweep covers two cities a day in rotation.
+
+**Database.** Run `supabase/attribution.sql` then `supabase/radar-v2.sql` in the Supabase SQL Editor (both additive, safe to re-run). Until then grading shows a "not set up" note and everything else works.
+
 ## Event Categories
 
 Events are categorized by keyword matching (first match wins, checked in order):

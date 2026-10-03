@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { FounderEvent, scoreLeadQuality, LeadScore } from "@/lib/types";
 import { supabase } from "@/lib/supabase";
+import { prepareRows } from "@/lib/server/events";
 import fs from "fs";
 import path from "path";
 
@@ -31,25 +32,6 @@ function loadFileCache(name: string): FounderEvent[] {
   return [];
 }
 
-function remapSource(externalId: string, dbSource: string): string {
-  if (dbSource !== "luma") return dbSource;
-  if (externalId.startsWith("eb-")) return "eventbrite";
-  if (externalId.startsWith("conf-")) return "confstech";
-  if (externalId.startsWith("devev-")) return "devevents";
-  if (externalId.startsWith("f6s-")) return "f6s";
-  if (externalId.startsWith("gg-")) return "garysguide";
-  if (externalId.startsWith("gsearch-")) return "googlesearch";
-  if (externalId.startsWith("web-")) return "websearch";
-  if (externalId.startsWith("10t-")) return "tentimes";
-  if (externalId.startsWith("sg-")) return "startupgrind";
-  if (externalId.startsWith("selectusa-")) return "selectusa";
-  if (externalId.startsWith("uni-")) return "university";
-  if (externalId.startsWith("partiful-")) return "partiful";
-  if (externalId.startsWith("meetup-")) return "meetup";
-  const confIds = ["latitude59", "slush", "web-summit", "tnw", "noah", "viva", "collision", "techcrunch", "rise-conf", "wolves", "arctic15", "login-", "riga-comm", "oslo-innovation", "sifted", "london-tech-week", "bits-pretzels", "pirate-summit", "pioneers", "south-summit", "websummit", "startup-grind", "tech-open-air", "tallinn-digital"];
-  if (confIds.some((c) => externalId.startsWith(c))) return "conference";
-  return "luma";
-}
 
 function extractCity(location: string): string {
   if (!location) return "";
@@ -75,6 +57,9 @@ function extractCity(location: string): string {
 export async function GET(request: Request) {
   const baseUrl = new URL(request.url).origin;
   const refresh = new URL(request.url).searchParams.get("refresh") === "true";
+  // Stale rows (not seen by a scraper for STALE_AFTER_DAYS) are hidden unless
+  // asked for: they may have been cancelled, moved or sold out.
+  const includeStale = new URL(request.url).searchParams.get("stale") === "true";
 
   // History mode: everything that already happened stays queryable forever.
   // Rows are never deleted; this is the read path for the archive.
@@ -91,7 +76,8 @@ export async function GET(request: Request) {
       past.push(...batch);
       if (batch.length < 1000) break;
     }
-    const events = dedup(past.map(rowToEvent));
+    // Past events are never re-seen by scrapers, so staleness does not apply.
+    const events = await prepareRows(past, { past: true, includeStale: true });
     return NextResponse.json({ events, total: events.length, source: "supabase-history" });
   }
 
@@ -114,8 +100,15 @@ export async function GET(request: Request) {
       }
 
       if (cached && cached.length > 0) {
-        const events = dedup(cached.map(rowToEvent));
-        return NextResponse.json({ events, total: events.length, source: "supabase", deduped: cached.length - events.length });
+        const all = await prepareRows(cached, { past: false, includeStale: true });
+        const events = includeStale ? all : all.filter((e) => !e.stale);
+        return NextResponse.json({
+          events,
+          total: events.length,
+          source: "supabase",
+          deduped: cached.length - all.length,
+          hiddenStale: all.length - events.length,
+        });
       }
     } catch (err) {
       console.error("Supabase fetch error:", err);
@@ -220,34 +213,6 @@ function dedup(events: FounderEvent[]): FounderEvent[] {
   return Array.from(seen.values());
 }
 
-function rowToEvent(row: Record<string, unknown>): FounderEvent {
-  return {
-    id: row.external_id as string,
-    dbId: row.id as string,
-    title: row.title as string,
-    description: (row.description as string) ?? "",
-    date: (row.starts_at as string) ?? "",
-    endDate: (row.ends_at as string) ?? undefined,
-    location: (row.location as string) ?? "",
-    url: row.url as string,
-    source: remapSource(row.external_id as string, row.source as string),
-    category: (row.category as string) ?? "general",
-    imageUrl: (row.image_url as string) ?? undefined,
-    leadScore: (row.lead_score as number) ?? undefined,
-    leadTier: (row.lead_tier as "hot" | "warm" | "cold") ?? "cold",
-    highLeverage: (row.high_leverage as boolean) ?? false,
-    leverageReason: (row.leverage_reason as string) ?? undefined,
-    acceptedAt: (row.accepted_at as string) ?? undefined,
-    attendedAt: (row.attended_at as string) ?? undefined,
-    cost: row.cost === null || row.cost === undefined ? undefined : Number(row.cost),
-    currency: (row.currency as string) ?? undefined,
-    debriefNotes: (row.debrief_notes as string) ?? undefined,
-    organizerName: (row.organizer_name as string) ?? undefined,
-    organizerLumaId: (row.organizer_luma_id as string) ?? undefined,
-    organizerLinkedin: (row.organizer_linkedin as string) ?? undefined,
-    organizerUsername: (row.organizer_username as string) ?? undefined,
-  };
-}
 
 // ---- background tasks ----
 
