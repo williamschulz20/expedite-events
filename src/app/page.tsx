@@ -10,6 +10,7 @@ import { SourceHealthBanner } from "@/components/SourceHealthBanner";
 import { RsvpConfirmModal, RSVP_CAP } from "@/components/RsvpConfirmModal";
 import type { ScoreAdjustment } from "@/lib/radar";
 import type { GradeSummary } from "@/lib/grade";
+import { useSetupStatus } from "@/lib/useSetupStatus";
 import { tallyLeads, type LeadTally } from "@/lib/leads";
 import { signIn, signOut } from "next-auth/react";
 import {
@@ -724,6 +725,7 @@ function EventDetailModal({
   // The leads list owns the rows; it publishes the derived counts the debrief
   // needs, so the same data is never fetched twice.
   const [leadTally, setLeadTally] = useState<LeadTally>(() => tallyLeads([]));
+  const setup = useSetupStatus();
   const isAccepted = !!event.acceptedAt;
   const isAttended = !!event.attendedAt;
 
@@ -982,28 +984,41 @@ function EventDetailModal({
           {/* Attribution. Always shown, not gated on "attended": the record is
               most often written before anyone remembers to tick that box, and
               hiding it behind a flag is how events end up with nothing. */}
-          <div className="space-y-3 border-t border-gray-100 pt-4">
-            {isPast && (
-              <GradePanel eventExternalId={event.id} memberId={currentIdentity?.teamMemberId ?? null} onSaved={onGraded} />
-            )}
-            <LeadsPanel
-              eventExternalId={event.id}
-              capturedBy={currentIdentity?.teamMemberId ?? null}
-              onTallyChange={setLeadTally}
-            />
-            {event.dbId && (
-              <DebriefPanel
-                dbId={event.dbId}
-                initialCost={event.cost ?? null}
-                initialCurrency={event.currency ?? null}
-                initialNotes={event.debriefNotes ?? null}
-                attended={isAttended}
-                hotCount={leadTally.hot}
-                totalLeads={leadTally.total}
-                debriefedBy={currentIdentity?.teamMemberId ?? null}
-              />
-            )}
-          </div>
+          {setup && (
+            <div className="space-y-3 border-t border-gray-100 pt-4">
+              {isPast && setup.grading && (
+                <GradePanel eventExternalId={event.id} memberId={currentIdentity?.teamMemberId ?? null} onSaved={onGraded} />
+              )}
+              {setup.attribution && (
+                <LeadsPanel
+                  eventExternalId={event.id}
+                  capturedBy={currentIdentity?.teamMemberId ?? null}
+                  onTallyChange={setLeadTally}
+                />
+              )}
+              {setup.attribution && event.dbId && (
+                <DebriefPanel
+                  dbId={event.dbId}
+                  initialCost={event.cost ?? null}
+                  initialCurrency={event.currency ?? null}
+                  initialNotes={event.debriefNotes ?? null}
+                  attended={isAttended}
+                  hotCount={leadTally.hot}
+                  totalLeads={leadTally.total}
+                  debriefedBy={currentIdentity?.teamMemberId ?? null}
+                />
+              )}
+              {(!setup.attribution || (isPast && !setup.grading)) && (
+                <p className="rounded-xl border border-dashed border-gray-200 px-4 py-3 text-[11px] text-gray-400">
+                  {[isPast && !setup.grading ? "Grading" : null, !setup.attribution ? "people met and spend" : null]
+                    .filter(Boolean)
+                    .join(", ")
+                    .replace(/^./, (c) => c.toUpperCase())}{" "}
+                  switch on once the database update has been run.
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
