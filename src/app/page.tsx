@@ -7,10 +7,12 @@ import { GradeBadge, GradePanel } from "@/components/GradePanel";
 import { GradeQueue } from "@/components/GradeQueue";
 import { ScoreBreakdown } from "@/components/ScoreBreakdown";
 import { SourceHealthBanner } from "@/components/SourceHealthBanner";
+import { ThisWeekView } from "@/components/ThisWeekView";
 import { RsvpConfirmModal, RSVP_CAP } from "@/components/RsvpConfirmModal";
 import type { ScoreAdjustment } from "@/lib/radar";
 import type { GradeSummary } from "@/lib/grade";
 import { useSetupStatus } from "@/lib/useSetupStatus";
+import { displayZone, eventClock, eventClock24, eventDay, zoneLabel } from "@/lib/eventTime";
 import { tallyLeads, type LeadTally } from "@/lib/leads";
 import { signIn, signOut } from "next-auth/react";
 import {
@@ -69,6 +71,10 @@ interface FounderEvent {
   timeKnown?: boolean;
   stale?: boolean;
   grade?: GradeSummary;
+  city?: string | null;
+  country?: string | null;
+  region?: string | null;
+  timeZone?: string | null;
 }
 
 interface TeamMember {
@@ -157,17 +163,6 @@ const OTHER_SOURCES = new Set([
   "selectusa", "university", "tentimes", "startupgrind",
 ]);
 
-const KNOWN_CITIES = [
-  "Toronto", "Montreal", "Vancouver",
-  "London", "Berlin", "Paris", "Amsterdam", "San Francisco",
-  "Los Angeles", "New York", "Austin", "Boston",
-  "Munich", "Barcelona", "Zurich", "Stockholm", "Helsinki",
-  "Lisbon", "Dublin", "Copenhagen", "Milan", "Madrid",
-  "Istanbul", "Vienna", "Warsaw", "Brussels", "Hamburg",
-  "Budapest", "Prague", "Geneva", "Lausanne", "Rome",
-  "Tallinn", "Riga", "Vilnius", "Oslo",
-];
-
 // Fallback team when Supabase team_members table is empty/unavailable
 const DEFAULT_TEAM: TeamMember[] = [
   { id: "w", name: "William", email: "", initials: "W", avatar_color: "#6366f1", calendar_setup_done: false },
@@ -177,86 +172,40 @@ const DEFAULT_TEAM: TeamMember[] = [
   { id: "t", name: "Tom", email: "", initials: "T", avatar_color: "#3b82f6", calendar_setup_done: false },
 ];
 
-function extractCity(location: string): string {
-  if (!location) return "Other";
-  const loc = location.toLowerCase();
-  if (loc.includes("san francisco") || loc.includes(", ca ") || loc.includes("sf,")) return "San Francisco";
-  for (const city of KNOWN_CITIES) {
-    if (loc.includes(city.toLowerCase())) return city;
-  }
-  return "Other";
+// City, country and region come resolved from the server (src/lib/places.ts).
+function cityOfEvent(ev: { city?: string | null }): string {
+  return ev.city ?? "Other";
 }
 
-// Country grouping for the top-level country filter.
-const COUNTRY_BY_CITY: Record<string, string> = {
-  "Toronto": "Canada", "Montreal": "Canada", "Vancouver": "Canada",
-  "London": "United Kingdom",
-  "Dublin": "Ireland",
-  "Berlin": "Germany", "Munich": "Germany", "Hamburg": "Germany",
-  "Paris": "France",
-  "Amsterdam": "Netherlands",
-  "San Francisco": "United States", "Los Angeles": "United States",
-  "New York": "United States", "Austin": "United States", "Boston": "United States",
-  "Barcelona": "Spain", "Madrid": "Spain",
-  "Zurich": "Switzerland", "Geneva": "Switzerland", "Lausanne": "Switzerland",
-  "Stockholm": "Sweden",
-  "Helsinki": "Finland",
-  "Lisbon": "Portugal",
-  "Copenhagen": "Denmark",
-  "Milan": "Italy", "Rome": "Italy",
-  "Istanbul": "Turkiye",
-  "Vienna": "Austria",
-  "Warsaw": "Poland",
-  "Brussels": "Belgium",
-  "Budapest": "Hungary",
-  "Prague": "Czechia",
-  "Tallinn": "Estonia",
-  "Riga": "Latvia",
-  "Vilnius": "Lithuania",
-  "Oslo": "Norway",
-};
-
-const REGION_BY_COUNTRY: Record<string, string> = {
-  "United States": "North America", "Canada": "North America",
-  "United Kingdom": "Europe", "Ireland": "Europe", "Germany": "Europe",
-  "France": "Europe", "Netherlands": "Europe", "Spain": "Europe",
-  "Portugal": "Europe", "Italy": "Europe", "Switzerland": "Europe",
-  "Austria": "Europe", "Belgium": "Europe", "Sweden": "Europe",
-  "Norway": "Europe", "Denmark": "Europe", "Finland": "Europe",
-  "Poland": "Europe", "Czechia": "Europe", "Hungary": "Europe",
-  "Estonia": "Europe", "Latvia": "Europe", "Lithuania": "Europe",
-  "Turkiye": "Europe", "Greece": "Europe", "Romania": "Europe",
-  "Bulgaria": "Europe", "Croatia": "Europe", "Slovenia": "Europe",
-  "Luxembourg": "Europe", "Iceland": "Europe",
-};
-
-function regionOfEvent(location: string): string {
-  return REGION_BY_COUNTRY[countryOfEvent(location)] ?? "Other";
+function countryOfEvent(ev: { country?: string | null }): string {
+  return ev.country ?? "Other";
 }
 
-function countryOfEvent(location: string): string {
-  return COUNTRY_BY_CITY[extractCity(location)] ?? "Other";
+function regionOfEvent(ev: { region?: string | null }): string {
+  return ev.region ?? "Other";
 }
 
 // Build a Google Calendar "add event" link. Times without a Z are treated as
 // the viewer's local time, which matches how scraped local times are stored.
 function googleCalendarUrl(ev: FounderEvent): string {
-  const fmt = (iso: string) => {
-    const hasZ = /Z$/i.test(iso);
-    const digits = iso.replace(/[-:]/g, "").replace(/\.\d+/, "");
-    const core = digits.length >= 15 ? digits.slice(0, 15) : `${digits.slice(0, 8)}T000000`;
-    return hasZ ? `${core}Z` : core;
-  };
   const params = new URLSearchParams({ action: "TEMPLATE", text: ev.title || "Event" });
-  if (ev.date) {
-    const start = fmt(ev.date);
-    let end: string;
-    if (ev.endDate) end = fmt(ev.endDate);
-    else {
-      const d = new Date(ev.date);
-      end = isNaN(d.getTime()) ? start : fmt(new Date(d.getTime() + 2 * 60 * 60 * 1000).toISOString().replace(/Z$/, /Z$/i.test(ev.date) ? "Z" : ""));
+  const day = (iso: string) => iso.slice(0, 10).replace(/-/g, "");
+  if (ev.timeKnown === false) {
+    // No start time: an all-day entry rather than a fake midnight.
+    const next = new Date(`${ev.date.slice(0, 10)}T00:00:00Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    params.set("dates", `${day(ev.date)}/${day(next.toISOString())}`);
+  } else if (ev.date) {
+    // Stored as UTC either way. Real instants go to Google as UTC; wall-clock
+    // sources go as floating times pinned to the venue zone with ctz.
+    const wallClock = displayZone(ev) === "UTC";
+    const stamp = (iso: string) => new Date(iso).toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "").slice(0, 15) + (wallClock ? "" : "Z");
+    const startMs = Date.parse(ev.date);
+    if (!Number.isNaN(startMs)) {
+      const endIso = ev.endDate && !Number.isNaN(Date.parse(ev.endDate)) ? ev.endDate : new Date(startMs + 2 * 3_600_000).toISOString();
+      params.set("dates", `${stamp(ev.date)}/${stamp(endIso)}`);
+      if (wallClock && ev.timeZone) params.set("ctz", ev.timeZone);
     }
-    params.set("dates", `${start}/${end}`);
   }
   const details = [ev.description, ev.url ? `RSVP: ${ev.url}` : ""].filter(Boolean).join("\n\n");
   if (details) params.set("details", details.slice(0, 1500));
@@ -308,17 +257,20 @@ function truncate(str: string, max: number) {
 }
 
 /** The calendar day an event is on. Time-less events use their own date, not local midnight. */
-function eventDayKey(ev: { date: string; timeKnown?: boolean }) {
-  return ev.timeKnown === false ? ev.date.slice(0, 10) : format(parseISO(ev.date), "yyyy-MM-dd");
+/** The calendar day an event is on, in the venue's own calendar (src/lib/eventTime.ts). */
+function eventDayKey(ev: FounderEvent) {
+  return eventDay(ev);
 }
 
-function formatEventDate(iso: string, timeKnown = true) {
+function formatEventDate(ev: FounderEvent) {
   try {
-    const d = timeKnown ? parseISO(iso) : parseISO(iso.slice(0, 10));
+    const d = parseISO(eventDay(ev));
+    const clock = eventClock(ev);
+    const zone = zoneLabel(ev);
     return {
       day:  format(d, "EEE"),
       date: format(d, "d MMM"),
-      time: timeKnown ? format(d, "h:mm a") : "Time TBC",
+      time: clock ? `${clock}${zone ? ` ${zone}` : ""}` : "Time TBC",
     };
   } catch {
     return { day: "—", date: "—", time: "—" };
@@ -565,7 +517,7 @@ function EventRow({
 }) {
   const tier = event.leadTier ?? "cold";
   const ts   = TIER_STYLES[tier];
-  const { day, date, time } = formatEventDate(event.date, event.timeKnown !== false);
+  const { day, date, time } = formatEventDate(event);
   const isPast     = new Date(event.date) < new Date();
   const isAccepted = !!event.acceptedAt;
   const isAttended = !!event.attendedAt;
@@ -732,13 +684,13 @@ function EventDetailModal({
   let dateStr = "—";
   let timeStr = "—";
   try {
-    const timeKnown = event.timeKnown !== false;
-    const d = parseISO(timeKnown ? event.date : event.date.slice(0, 10));
-    dateStr = format(d, "EEEE, d MMMM yyyy");
-    timeStr = timeKnown ? format(d, "h:mm a") : "Time TBC (the listing gives no start time)";
-    if (timeKnown && event.endDate) {
-      timeStr += " – " + format(parseISO(event.endDate), "h:mm a");
-    }
+    dateStr = format(parseISO(eventDay(event)), "EEEE, d MMMM yyyy");
+    const start = eventClock(event);
+    const end = start && event.endDate ? eventClock(event, event.endDate) : null;
+    const zone = zoneLabel(event);
+    timeStr = start
+      ? `${start}${end ? ` – ${end}` : ""}${zone ? ` ${zone} (local time)` : ""}`
+      : "Time TBC (the listing gives no start time)";
   } catch { /* keep defaults */ }
 
   const handleBackdrop = (e: React.MouseEvent) => {
@@ -1059,7 +1011,7 @@ function buildEventsByDay(events: FounderEvent[]) {
 function EventChip({ ev, onClick }: { ev: FounderEvent; onClick: () => void }) {
   const chipCls = CHIP_COLORS[ev.leadTier ?? "warm"];
   let timeLabel = "";
-  try { timeLabel = ev.timeKnown === false ? "TBC" : format(parseISO(ev.date), "H:mm"); } catch { /* skip */ }
+  timeLabel = eventClock24(ev) ?? "TBC";
   return (
     <button
       onClick={onClick}
@@ -1193,7 +1145,7 @@ function DayGrid({ day, eventsByDay, onEventClick, attendanceByEvent, currentIde
             const tier = ev.leadTier ?? "warm";
             const ts = TIER_STYLES[tier];
             let timeStr = "";
-            try { timeStr = ev.timeKnown === false ? "Time TBC" : format(parseISO(ev.date), "h:mm a"); } catch { /* skip */ }
+            timeStr = eventClock(ev) ?? "Time TBC";
             return (
               <div
                 key={ev.id}
@@ -1451,7 +1403,7 @@ function PeopleView({
                   const tier = ev.leadTier ?? "cold";
                   const ts = TIER_STYLES[tier];
                   let dateLabel = "";
-                  try { dateLabel = format(parseISO(ev.date), "d MMM"); } catch { /* skip */ }
+                  try { dateLabel = format(parseISO(eventDay(ev)), "d MMM"); } catch { /* skip */ }
                   return (
                     <button
                       key={ev.id}
@@ -2026,7 +1978,8 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortByLead,  setSortByLead]  = useState(false);
   const [pricingFilter, setPricingFilter] = useState<"All" | "free" | "paid">("All");
-  const [view,        setView]        = useState<"list" | "calendar" | "people" | "organizers">("calendar");
+  // Opens on "This week": the question people arrive with is where to go next.
+  const [view,        setView]        = useState<"week" | "list" | "calendar" | "people" | "organizers">("week");
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [rsvpLoading,  setRsvpLoading]  = useState(false);
   const [rsvpResult,   setRsvpResult]   = useState<{ succeeded: number; failed: number; total: number } | null>(null);
@@ -2250,7 +2203,7 @@ export default function Home() {
   const availableRegions = useMemo(() => {
     const counts = new Map<string, number>();
     events.forEach((ev) => {
-      const r = regionOfEvent(ev.location);
+      const r = regionOfEvent(ev);
       if (r === "Other") return;
       counts.set(r, (counts.get(r) ?? 0) + 1);
     });
@@ -2260,8 +2213,8 @@ export default function Home() {
   const availableCountries = useMemo(() => {
     const counts = new Map<string, number>();
     events.forEach((ev) => {
-      if (region !== "All" && regionOfEvent(ev.location) !== region) return;
-      const c = countryOfEvent(ev.location);
+      if (region !== "All" && regionOfEvent(ev) !== region) return;
+      const c = countryOfEvent(ev);
       if (c === "Other") return;
       counts.set(c, (counts.get(c) ?? 0) + 1);
     });
@@ -2271,9 +2224,9 @@ export default function Home() {
   const availableCities = useMemo(() => {
     const counts = new Map<string, number>();
     events.forEach((ev) => {
-      if (region !== "All" && regionOfEvent(ev.location) !== region) return;
-      if (country !== "All" && countryOfEvent(ev.location) !== country) return;
-      const c = extractCity(ev.location);
+      if (region !== "All" && regionOfEvent(ev) !== region) return;
+      if (country !== "All" && countryOfEvent(ev) !== country) return;
+      const c = cityOfEvent(ev);
       counts.set(c, (counts.get(c) ?? 0) + 1);
     });
     return Array.from(counts.entries())
@@ -2291,9 +2244,9 @@ export default function Home() {
       const srcOk  = source     === "All"
         || (source === "Other" && OTHER_SOURCES.has(ev.source))
         || ev.source.toLowerCase() === source.toLowerCase();
-      const cityOk = city       === "All" || extractCity(ev.location)  === city;
-      const countryOk = country === "All" || countryOfEvent(ev.location) === country;
-      const regionOk = region === "All" || regionOfEvent(ev.location) === region;
+      const cityOk = city       === "All" || cityOfEvent(ev)  === city;
+      const countryOk = country === "All" || countryOfEvent(ev) === country;
+      const regionOk = region === "All" || regionOfEvent(ev) === region;
       const searchOk = !q || ev.title.toLowerCase().includes(q)
         || ev.description.toLowerCase().includes(q)
         || ev.location.toLowerCase().includes(q)
@@ -2431,7 +2384,7 @@ export default function Home() {
             <button
               onClick={fetchEvents}
               disabled={loading}
-              title="Re-scrape all sources and refresh the event list"
+              title="Reload the event list (sources are scraped daily)"
               className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 shadow-sm transition hover:bg-gray-50 disabled:opacity-40"
             >
               <svg className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -2507,7 +2460,15 @@ export default function Home() {
           {/* Row 1: Event views */}
           <div className="flex items-center gap-3">
             <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 w-16 shrink-0">Events</span>
-            <div className="flex items-center gap-1 rounded-xl border border-gray-200 bg-white p-1 shadow-sm">
+            <div className="flex max-w-full items-center gap-1 overflow-x-auto rounded-xl border border-gray-200 bg-white p-1 shadow-sm">
+              <button
+                onClick={() => setView("week")}
+                className={`flex items-center gap-2 rounded-lg px-4 py-1.5 text-sm font-medium transition ${
+                  view === "week" ? "bg-gray-900 text-white shadow-sm" : "text-gray-500 hover:text-gray-800"
+                }`}
+              >
+                This week
+              </button>
               <button
                 onClick={() => setView("calendar")}
                 className={`flex items-center gap-2 rounded-lg px-4 py-1.5 text-sm font-medium transition ${
@@ -2536,7 +2497,7 @@ export default function Home() {
           {/* Row 2: People context — who's hosting vs who's attending */}
           <div className="flex items-center gap-3">
             <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 w-16 shrink-0">People</span>
-            <div className="flex items-center gap-1 rounded-xl border border-gray-200 bg-white p-1 shadow-sm">
+            <div className="flex max-w-full items-center gap-1 overflow-x-auto rounded-xl border border-gray-200 bg-white p-1 shadow-sm">
               <button
                 onClick={() => setView("organizers")}
                 className={`flex items-center gap-2 rounded-lg px-4 py-1.5 text-sm font-medium transition ${
@@ -2840,7 +2801,7 @@ export default function Home() {
                   All cities
                 </button>
                 {availableCities.map((c) => {
-                  const count = events.filter((e) => extractCity(e.location) === c).length;
+                  const count = events.filter((e) => cityOfEvent(e) === c).length;
                   const isActive = city === c;
                   return (
                     <button
@@ -2894,6 +2855,15 @@ export default function Home() {
 
         ) : (
           <div className="flex flex-col gap-6">
+            {view === "week" && (
+              <ThisWeekView
+                events={filteredEvents}
+                attendanceByEvent={attendanceByEvent}
+                myId={identity?.teamMemberId ?? null}
+                onToggleAttendance={handleToggleAttendance}
+                onOpen={(ev) => setModalEvent(ev)}
+              />
+            )}
             {view === "calendar" && (
           <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
             <CalendarView
