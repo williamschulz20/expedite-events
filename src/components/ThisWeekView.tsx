@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { format, parseISO } from "date-fns";
 import { eventClock, eventDay, zoneLabel } from "@/lib/eventTime";
 
@@ -58,8 +58,9 @@ export function ThisWeekView<E extends WeekEvent>({
   onToggleAttendance: (eventId: string) => void;
   onOpen: (event: E) => void;
 }) {
-  const [city, setCity] = useState("Anywhere");
-  useEffect(() => setCity(readCity()), []);
+  // Only rendered after events load on the client, so reading storage here
+  // cannot cause a hydration mismatch.
+  const [city, setCity] = useState(readCity);
   const pick = (c: string) => {
     setCity(c);
     try {
