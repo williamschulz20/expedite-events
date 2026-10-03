@@ -69,14 +69,15 @@ export function ThisWeekView<E extends WeekEvent>({
     }
   };
 
+  // Fixed at mount: the window does not need to slide while the page is open.
+  const [now] = useState(() => Date.now());
   const week = useMemo(() => {
-    const now = Date.now();
     const end = now + DAYS_AHEAD * 86_400_000;
     return events.filter((e) => {
       const t = Date.parse(e.timeKnown === false ? `${e.date.slice(0, 10)}T23:59:00` : e.date);
       return t >= now && t <= end && (e.leadTier === "hot" || e.leadTier === "warm");
     });
-  }, [events]);
+  }, [events, now]);
 
   const cities = useMemo(() => {
     const counts = new Map<string, number>();
