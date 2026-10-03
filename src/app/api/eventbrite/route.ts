@@ -122,6 +122,16 @@ function extractServerData(html: string): any | null {
   return null;
 }
 
+/**
+ * A venue name alone ("The Lincoln") says nothing about where it is, so the
+ * city is appended unless the venue text already names it.
+ */
+function withCity(venue: string, city: string): string {
+  if (!venue) return city;
+  if (!city || venue.toLowerCase().includes(city.toLowerCase())) return venue;
+  return `${venue}, ${city}`;
+}
+
 async function fetchEventbritePage(
   citySlug: string,
   cityLabel: string,
@@ -179,11 +189,13 @@ async function fetchEventbritePage(
           endDate: endDate ? (endTime ? `${endDate}T${endTime}` : endDate) : undefined,
           location: e.is_online_event
             ? "Online"
-            : ((venue.name as string) ||
-               (addr.localized_address_display as string) ||
-               (addr.localized_area_display as string) ||
-               (addr.city as string) ||
-               cityLabel),
+            : withCity(
+                (venue.name as string) ||
+                  (addr.localized_address_display as string) ||
+                  (addr.localized_area_display as string) ||
+                  "",
+                (addr.city as string) || cityLabel
+              ),
           url: cleanUrl,
           source: "eventbrite",
           category: categorizeEvent(title, desc),
@@ -215,11 +227,10 @@ async function fetchEventbritePage(
               description: desc,
               date: evt.startDate || "",
               endDate: evt.endDate || undefined,
-              location:
-                evt.location?.name ||
-                evt.location?.address?.streetAddress ||
-                evt.location?.address?.addressLocality ||
-                cityLabel,
+              location: withCity(
+                evt.location?.name || evt.location?.address?.streetAddress || "",
+                evt.location?.address?.addressLocality || cityLabel
+              ),
               url: (evt.url || "").split("?")[0],
               source: "eventbrite",
               category: categorizeEvent(title, desc),

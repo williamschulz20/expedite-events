@@ -1,5 +1,7 @@
 import { scoreLeadQuality, type FounderEvent } from "@/lib/types";
 import { letterFor, type GradeSummary } from "@/lib/grade";
+import { resolvePlace } from "@/lib/places";
+import { eventClock24 } from "@/lib/eventTime";
 
 // ---------------------------------------------------------------------------
 // Read-time scoring context and data hygiene.
@@ -48,6 +50,10 @@ export type RadarEvent = FounderEvent & {
   seriesKey?: string;
   /** The team's grade, once someone who went has graded it. */
   grade?: GradeSummary;
+  city?: string | null;
+  country?: string | null;
+  region?: string | null;
+  timeZone?: string | null;
 };
 
 export function tierFor(score: number): Tier {
@@ -99,12 +105,6 @@ export function organizerKey(name: string | null | undefined): string {
   return name ? words(name) : "";
 }
 
-/** The city from the venue, or from the title when the venue is just a name. */
-function cityOf(location: string, title: string): string {
-  const m = words(location ?? "").match(CITY_RE) ?? words(title ?? "").match(CITY_RE);
-  return m ? m[0] : "";
-}
-
 // ---- context rules --------------------------------------------------------
 
 // Companies selling visas, relocation or residency. They run events that read
@@ -115,6 +115,11 @@ const SELLER_RE =
 // Paid-seminar formats: someone is selling a course, not hosting founders.
 const SEMINAR_RE =
   /\b(strategy session|masterclass|master class|bootcamp|blueprint|one day (training|workshop)|1 day (training|workshop)|training program|certification|seminar|success summit|wealth|get rich|passive income|real estate investing)\b/;
+
+// Course sellers list the same workshop in dozens of cities with no venue,
+// e.g. "For venue information, please contact us: info@...". 184 upcoming
+// rows looked like this in Oct 2026.
+const TRAINING_MILL_RE = /\b(for venue information|please contact us|venue to be shared after registration)\b/;
 
 const BIG_VENUE_RE =
   /\b(hotel|marriott|hilton|hyatt|fairmont|sheraton|westin|intercontinental|driskill|ritz|convention (center|centre)|exhibition (center|centre)|expo (center|centre))\b/;
@@ -149,7 +154,7 @@ export function applyContext(events: RadarEvent[], feedback: Feedback = EMPTY_FE
   const citiesBySeries = new Map<string, Set<string>>();
   const keys = events.map((e) => seriesKey(e.title ?? ""));
   events.forEach((e, i) => {
-    const city = cityOf(e.location, e.title);
+    const city = e.city ?? resolvePlace(e.location, e.title).city;
     if (!keys[i] || !city) return;
     const set = citiesBySeries.get(keys[i]) ?? new Set<string>();
     set.add(city);
@@ -162,6 +167,9 @@ export function applyContext(events: RadarEvent[], feedback: Feedback = EMPTY_FE
     const adjustments: ScoreAdjustment[] = [];
 
     if (base.score > 0) {
+      if (TRAINING_MILL_RE.test(words(e.location ?? ""))) {
+        adjustments.push({ delta: -40, reason: "Training-company listing with no venue: a paid course, not a founder event" });
+      }
       if (SELLER_RE.test(text)) {
         adjustments.push({ delta: -40, reason: "Run by a visa or relocation seller: the room is other sellers, not founders" });
       }
@@ -274,5 +282,9 @@ export function dedupeEvents(events: RadarEvent[]): RadarEvent[] {
 
 /** Hygiene flags for one stored event. */
 export function withHygiene(e: RadarEvent, now = Date.now()): RadarEvent {
-  return { ...e, timeKnown: timeKnown(e.date), stale: isStale(e.lastSeenAt, now) };
+  const placed: RadarEvent = { ...e, ...resolvePlace(e.location, e.title) };
+  // Midnight in the venue's own clock is a missing time too (Meetup and Luma
+  // give a local-midnight instant for date-only listings).
+  const known = timeKnown(e.date) && eventClock24({ ...placed, timeKnown: true }) !== "00:00";
+  return { ...placed, timeKnown: known, stale: isStale(e.lastSeenAt, now) };
 }

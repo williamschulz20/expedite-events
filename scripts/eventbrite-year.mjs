@@ -44,6 +44,12 @@ function extractServerData(html) {
   return null;
 }
 
+function withCity(venue, city) {
+  if (!venue) return city;
+  if (!city || venue.toLowerCase().includes(city.toLowerCase())) return venue;
+  return `${venue}, ${city}`;
+}
+
 function mapEvents(sd, cityLabel) {
   const ev = sd?.search_data?.events ?? {};
   const raw = [...(ev.results ?? []), ...(ev.promoted_results ?? [])];
@@ -58,7 +64,8 @@ function mapEvents(sd, cityLabel) {
       description: (e.summary ?? "").slice(0, 500),
       date: e.start_date ? (e.start_time ? `${e.start_date}T${e.start_time}` : e.start_date) : "",
       endDate: e.end_date ? (e.end_time ? `${e.end_date}T${e.end_time}` : e.end_date) : undefined,
-      location: e.is_online_event ? "Online" : (v.name || a.localized_address_display || a.city || cityLabel),
+      // City appended so a bare venue name ("The Lincoln") can still be placed.
+      location: e.is_online_event ? "Online" : withCity(v.name || a.localized_address_display || "", a.city || cityLabel),
       url,
       source: "eventbrite",
       category: "general",
