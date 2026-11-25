@@ -1945,12 +1945,15 @@ function ConflictModal({
 // Stat card
 // ---------------------------------------------------------------------------
 
-function Stat({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
+function Stat({ label, value, sub, glow, delay = 0 }: { label: string; value: string | number; sub?: string; glow?: string; delay?: number }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400">{label}</p>
-      <p className="text-2xl font-bold tracking-tight text-gray-900">{value}</p>
-      {sub && <p className="text-xs text-gray-400">{sub}</p>}
+    <div
+      className="stat-card rise flex flex-col gap-1 px-4 py-4"
+      style={{ ["--stat-glow" as string]: glow ?? "transparent", animationDelay: `${delay}ms` }}
+    >
+      <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-gray-500">{label}</p>
+      <p className="stat-value text-3xl font-semibold tracking-[-0.04em]">{value}</p>
+      {sub && <p className="truncate text-xs text-gray-500">{sub}</p>}
     </div>
   );
 }
@@ -2285,7 +2288,7 @@ export default function Home() {
   const isPeopleView = view === "people";
 
   return (
-    <div className="min-h-screen bg-[#fafafa] font-sans antialiased">
+    <div className="min-h-screen bg-gray-50 font-sans antialiased">
 
       {/* Modals */}
       {showAddEvent && (
@@ -2340,16 +2343,16 @@ export default function Home() {
       )}
 
       {/* ── Top nav ────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/90 backdrop-blur-sm">
+      <header className="sticky top-0 z-10 border-b border-white/[0.06] bg-[#08090a]/70 backdrop-blur-xl backdrop-saturate-150">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-6">
           <div className="flex items-center gap-3">
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gray-900 overflow-hidden p-1">
+            <div className="brand-mark flex h-7 w-7 items-center justify-center rounded-md bg-gray-900 overflow-hidden p-1">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src="/expedite-logo.png" alt="Expedite" className="h-full w-full object-contain" />
             </div>
-            <span className="whitespace-nowrap text-sm font-semibold text-gray-900">Expedite Events</span>
+            <span className="whitespace-nowrap text-sm font-semibold tracking-[-0.02em] text-gray-900">Expedite Events</span>
             <span className="hidden text-gray-200 sm:inline">·</span>
-            <span className="hidden text-xs text-gray-400 sm:inline">Founder pipeline</span>
+            <span className="hidden items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[11px] text-gray-500 sm:inline-flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.9)]" />Founder pipeline</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -2428,12 +2431,12 @@ export default function Home() {
 
         {/* ── Stats row ─────────────────────────────────────────── */}
         {!loading && !error && (
-          <div className="mb-8 grid grid-cols-2 gap-6 sm:grid-cols-5">
-            <Stat label="Total events"  value={events.length} />
-            <Stat label="🔥 Hot"       value={hotCount}  sub="Highest founder density" />
-            <Stat label="🟡 Warm"      value={warmCount} sub="Strong founder signal" />
-            <Stat label="🧊 Cold"      value={coldCount} sub="Broader tech ecosystem" />
-            <Stat label="Next 🔥 Hot"
+          <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-5">
+            <Stat label="Total events"  value={events.length} glow="rgba(94,106,210,0.9)" sub="Across every source" />
+            <Stat label="🔥 Hot"       value={hotCount}  glow="rgba(249,115,22,0.8)"  sub="Highest founder density" delay={60} />
+            <Stat label="🟡 Warm"      value={warmCount} glow="rgba(234,179,8,0.7)"   sub="Strong founder signal" delay={120} />
+            <Stat label="🧊 Cold"      value={coldCount} glow="rgba(56,189,248,0.7)"  sub="Broader tech ecosystem" delay={180} />
+            <Stat label="Next 🔥 Hot" glow="rgba(244,63,94,0.7)" delay={240}
               value={nextHotEvent ? format(parseISO(nextHotEvent.date), "d MMM") : "—"}
               sub={nextHotEvent ? truncate(nextHotEvent.title, 28) : "No upcoming hot events"}
             />
